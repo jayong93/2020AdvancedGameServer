@@ -10,12 +10,22 @@
 using namespace std;
 using namespace chrono;
 #include <WS2tcpip.h>
+#include <MSWSock.h>
 #pragma comment(lib, "Ws2_32.lib")
 
 #include "protocol.h"
 
 #define MAX_BUFFER        1024
 constexpr auto VIEW_RANGE = 3;
+constexpr int MAX_PENDING_RECV = 1000;
+constexpr int MAX_PENDING_SEND = 1000;
+constexpr int client_limit = 5000; // 예상 최대 client 수
+
+RIO_CQ completion_queue;
+RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
+PCHAR rio_buffer;
+RIO_BUFFERID rio_buf_id;
+vector<size_t> available_buf_idx;
 
 enum EVENT_TYPE { EV_RECV, EV_SEND, EV_MOVE, EV_PLAYER_MOVE_NOTIFY, EV_MOVE_TARGET, EV_ATTACK, EV_HEAL };
 
@@ -338,6 +348,27 @@ void do_worker()
 	}
 }
 
+void init_rio(SOCKET listen_sock) {
+	GUID f_table_id = WSAID_MULTIPLE_RIO;
+	DWORD returned_bytes;
+	DWORD result;
+	result = WSAIoctl(listen_sock, SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER, &f_table_id, sizeof(GUID), &rio_ftable, sizeof(rio_ftable), &returned_bytes, nullptr, nullptr);
+	if (result == SOCKET_ERROR) {
+		fprintf(stderr, "WSAIoctl with RIO Function Table has failed\n");
+		exit(-1);
+	}
+
+	constexpr int buffer_size = client_limit * MAX_BUFFER;
+	rio_buffer = (PCHAR)VirtualAllocEx(GetCurrentProcess(), nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	rio_buf_id = rio_ftable.RIORegisterBuffer(rio_buffer, buffer_size);
+	for (int i = 0; i < client_limit; ++i) {
+		available_buf_idx.push_back(i);
+	}
+
+	constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND) * client_limit;
+	completion_queue = rio_ftable.RIOCreateCompletionQueue(completion_queue_size, nullptr);
+}
+
 int main()
 {
 	wcout.imbue(std::locale("korean"));
@@ -354,6 +385,9 @@ int main()
 				error_display("WSARecv Error :", WSAGetLastError());
 	}
 	listen(listenSocket, 5);
+
+	init_rio(listenSocket);
+
 	SOCKADDR_IN clientAddr;
 	int addrLen = sizeof(SOCKADDR_IN);
 	memset(&clientAddr, 0, addrLen);
