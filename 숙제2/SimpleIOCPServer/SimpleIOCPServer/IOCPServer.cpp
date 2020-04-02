@@ -106,16 +106,14 @@ void send_packet(int id, void* buff)
 	//		error_display("WSARecv Error :", err_no);
 	//}
 	char* packet = reinterpret_cast<char*>(buff);
-	int packet_size = packet[0];
 
-	unique_ptr<char[]> p_data = make_unique<char[]>(packet_size);
-	memcpy_s(p_data.get(), packet_size, packet, packet_size);
+	unique_ptr<char[]> p_data{ packet };
 	send_queue.enq(SendInfo(id, std::move(p_data)));
 }
 
 void send_login_ok_packet(int id)
 {
-	sc_packet_login_ok packet;
+	sc_packet_login_ok& packet = *new sc_packet_login_ok;
 	packet.id = id;
 	packet.size = sizeof(packet);
 	packet.type = SC_LOGIN_OK;
@@ -129,7 +127,7 @@ void send_login_ok_packet(int id)
 
 void send_login_fail(int id)
 {
-	sc_packet_login_fail packet;
+	sc_packet_login_fail& packet = *new sc_packet_login_fail;
 	packet.size = sizeof(packet);
 	packet.type = SC_LOGIN_FAIL;
 	send_packet(id, &packet);
@@ -137,7 +135,7 @@ void send_login_fail(int id)
 
 void send_put_object_packet(int client, int new_id)
 {
-	sc_packet_put_object packet;
+	sc_packet_put_object& packet = *new sc_packet_put_object;
 	packet.id = new_id;
 	packet.size = sizeof(packet);
 	packet.type = SC_PUT_OBJECT;
@@ -153,7 +151,7 @@ void send_put_object_packet(int client, int new_id)
 
 void send_pos_packet(int client, int mover)
 {
-	sc_packet_pos packet;
+	sc_packet_pos& packet = *new sc_packet_pos;
 	packet.id = mover;
 	packet.size = sizeof(packet);
 	packet.type = SC_POS;
@@ -173,7 +171,7 @@ void send_pos_packet(int client, int mover)
 
 void send_remove_object_packet(int client, int leaver)
 {
-	sc_packet_remove_object packet;
+	sc_packet_remove_object& packet = *new sc_packet_remove_object;
 	packet.id = leaver;
 	packet.size = sizeof(packet);
 	packet.type = SC_REMOVE_OBJECT;
@@ -193,6 +191,7 @@ void Disconnect(int id)
 {
 	clients[id]->is_connected = false;
 	closesocket(clients[id]->socket);
+	printf("User #%d has disconnected\n", id);
 	for (auto& cl : clients) {
 		if (true == cl.second->is_connected)
 			send_remove_object_packet(cl.first, id);
@@ -480,6 +479,8 @@ int main()
 		new_player->x = 4;
 		new_player->y = 4;
 		clients.insert(make_pair(user_id, new_player));
+
+		printf("User #%d has connected\n", user_id);
 
 		int ret = rio_ftable.RIOReceive(new_player->rio_rq, &new_player->rio_recv_buf, 1, 0, (void*)EV_RECV);
 		//int ret = WSARecv(clientSocket, clients[user_id]->recv_over.wsabuf, 1, NULL,
