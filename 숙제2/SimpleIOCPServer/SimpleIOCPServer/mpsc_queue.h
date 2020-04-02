@@ -140,7 +140,7 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 		}
 
 		if (true == old_tail->next.compare_exchange_strong(old_next, &new_node)) {
-			tail.compare_exchange_strong(old_tail, old_next);
+			tail.compare_exchange_strong(old_tail, &new_node);
 			break;
 		}
 	}

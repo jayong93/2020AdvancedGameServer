@@ -21,7 +21,7 @@ constexpr auto VIEW_RANGE = 3;
 constexpr int MAX_PENDING_RECV = 1000;
 constexpr int MAX_PENDING_SEND = 1000;
 constexpr int client_limit = 10000; // 예상 최대 client 수
-constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND) * client_limit;
+constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
 
 struct SendInfo {
 	SendInfo() = default;
@@ -365,6 +365,7 @@ void do_worker()
 				while (true);
 			}
 		}
+		rio_ftable.RIONotify(client->rio_cq);
 	}
 }
 
@@ -489,6 +490,7 @@ int main()
 			if (WSA_IO_PENDING != err_no)
 				error_display("RIORecv Error :", err_no);
 		}
+		rio_ftable.RIONotify(new_player->rio_cq);
 	}
 	for (auto& th : worker_threads) th.join();
 	closesocket(listenSocket);
