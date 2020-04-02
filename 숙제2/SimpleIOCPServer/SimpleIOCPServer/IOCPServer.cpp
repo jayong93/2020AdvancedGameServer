@@ -46,7 +46,6 @@ struct SOCKETINFO
 	RIO_BUF rio_send_buf;
 	char* recv_buf;
 	char* send_buf;
-	mutex send_buf_lock;
 	RIO_RQ	rio_rq;
 	RIO_CQ	rio_cq;
 
@@ -382,7 +381,6 @@ void broadcast() {
 			auto client = clients[send_info.id];
 			unsigned char data_size = send_info.data[0];
 
-			lock_guard<mutex> lg{ client->send_buf_lock };
 			memcpy_s(client->send_buf, MAX_BUFFER, send_info.data.get(), data_size);
 			client->rio_send_buf.Length = data_size;
 
