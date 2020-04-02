@@ -40,6 +40,7 @@ enum EVENT_TYPE { EV_RECV, EV_SEND, EV_MOVE, EV_PLAYER_MOVE_NOTIFY, EV_MOVE_TARG
 
 struct SOCKETINFO
 {
+	OVERLAPPED completion_over;
 	RIO_BUF rio_recv_buf;
 	RIO_BUF rio_send_buf;
 	char* recv_buf;
@@ -63,7 +64,6 @@ struct SOCKETINFO
 
 Concurrency::concurrent_unordered_map <int, SOCKETINFO*> clients;
 HANDLE	g_iocp;
-OVERLAPPED g_over;
 
 int new_user_id = 0;
 
@@ -331,7 +331,7 @@ void do_worker()
 
 			if (EV_RECV == result.RequestContext) {
 				char* p = client->recv_buf;
-				int remain = num_byte;
+				int remain = result.BytesTransferred;
 				int packet_size;
 				int prev_packet_size = client->prev_packet_size;
 				if (0 == prev_packet_size)
@@ -436,7 +436,6 @@ int main()
 	memset(&clientAddr, 0, addrLen);
 
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
-	ZeroMemory(&g_over, sizeof(g_over));
 	vector <thread> worker_threads;
 	thread broadcaster{ broadcast };
 	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(do_worker);
@@ -450,11 +449,6 @@ int main()
 				error_display("Accept Error :", err_no);
 		}
 		int user_id = new_user_id++;
-		RIO_NOTIFICATION_COMPLETION rio_noti;
-		rio_noti.Type = RIO_IOCP_COMPLETION;
-		rio_noti.Iocp.IocpHandle = g_iocp;
-		rio_noti.Iocp.Overlapped = &g_over;
-		rio_noti.Iocp.CompletionKey = (void*)user_id;
 
 		SOCKETINFO* new_player = new SOCKETINFO;
 		new_player->id = user_id;
@@ -468,6 +462,13 @@ int main()
 		new_player->rio_send_buf.BufferId = rio_buf_id;
 		new_player->rio_send_buf.Length = MAX_BUFFER;
 		new_player->rio_send_buf.Offset = (user_id * MAX_BUFFER * 2) + MAX_BUFFER;
+
+		ZeroMemory(&new_player->completion_over, sizeof(OVERLAPPED));
+		RIO_NOTIFICATION_COMPLETION rio_noti;
+		rio_noti.Type = RIO_IOCP_COMPLETION;
+		rio_noti.Iocp.IocpHandle = g_iocp;
+		rio_noti.Iocp.Overlapped = &new_player->completion_over;
+		rio_noti.Iocp.CompletionKey = (void*)user_id;
 		new_player->rio_cq = rio_ftable.RIOCreateCompletionQueue(completion_queue_size, &rio_noti);
 		if (new_player->rio_cq == RIO_INVALID_CQ) {
 			error_display("RIOCreateCompletionQueue Error :", WSAGetLastError());
