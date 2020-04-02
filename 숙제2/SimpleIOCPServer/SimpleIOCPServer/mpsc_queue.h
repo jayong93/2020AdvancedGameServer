@@ -35,7 +35,7 @@ template <typename T>
 struct QueueNode {
 	QueueNode<T>() = default;
 	QueueNode<T>(T& val) : value{ val } {}
-	QueueNode<T>(T&& val) : value{ std::forward(val) } {}
+	QueueNode<T>(T&& val) : value{ std::move(val) } {}
 
 	T value;
 	std::atomic<QueueNode<T>*> next = nullptr;
@@ -43,7 +43,8 @@ struct QueueNode {
 
 template <typename T>
 struct RetiredNode {
-	RetiredNode(QueueNode<T>* node, unsigned long long epoch) : node{ node }, removed_epoch{ epoch } {}
+	RetiredNode<T>() = default;
+	RetiredNode<T>(QueueNode<T>* node, unsigned long long epoch) : node{ node }, removed_epoch{ epoch } {}
 
 	QueueNode<T>* node{ nullptr };
 	unsigned long long removed_epoch;
@@ -55,7 +56,12 @@ struct MPSCQueue {
 private:
 	QueueNode<T>* volatile head;
 	std::atomic<QueueNode<T>*> tail;
-	static thread_local std::vector<RetiredNode<T>> retired_list;
+	struct RetiredList {
+		static std::vector<RetiredNode<T>>& get() {
+			static thread_local std::vector<RetiredNode<T>> retired_list;
+			return retired_list;
+		}
+	};
 
 	void start_op();
 	void end_op();
@@ -66,7 +72,7 @@ private:
 public:
 	MPSCQueue<T>() : head{ new QueueNode<T> }, tail{ head } {}
 
-	std::optional<T>&& deq();
+	std::optional<T> deq();
 	void enq(T& val);
 	void enq(T&& val);
 };
@@ -87,7 +93,7 @@ inline void MPSCQueue<T>::end_op()
 template<typename T>
 inline void MPSCQueue<T>::retire(QueueNode<T>* node)
 {
-	retired_list.emplace_back(node, g_epoch.load(std::memory_order_relaxed));
+	RetiredList::get().emplace_back(node, g_epoch.load(std::memory_order_relaxed));
 	counter++;
 	if (counter % epoch_increase_rate == 0) { g_epoch.fetch_add(1, std::memory_order_relaxed); }
 	if (counter % empty_rate == 0) {
@@ -109,14 +115,15 @@ inline void MPSCQueue<T>::empty()
 		thread_epoch = next_t_epoch;
 	}
 
-	auto removed_it = std::remove_if(this->retired_list.begin(), this->retired_list.end(), [](RetiredNode<T>& r_node) {
+	auto& retired_list = RetiredList::get();
+	auto removed_it = std::remove_if(retired_list.begin(), retired_list.end(), [min_epoch](RetiredNode<T>& r_node) {
 		if (r_node.removed_epoch < min_epoch) {
 			delete r_node.node;
 			return true;
 		}
 		return false;
 		});
-	this->retired_list.erase(removed_it, this->retired_list.end());
+	retired_list.erase(removed_it, retired_list.end());
 }
 
 template<typename T>
@@ -141,7 +148,7 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 }
 
 template<typename T>
-inline std::optional<T>&& MPSCQueue<T>::deq()
+inline std::optional<T> MPSCQueue<T>::deq()
 {
 	start_op();
 	std::optional<T> retval;
@@ -159,7 +166,7 @@ inline std::optional<T>&& MPSCQueue<T>::deq()
 }
 
 template<typename T>
-void MPSCQueue<T>::enq(T& val)
+inline void MPSCQueue<T>::enq(T& val)
 {
 	this->inner_enq(*new QueueNode<T>{ val });
 }

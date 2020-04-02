@@ -6,9 +6,10 @@
 #include <chrono>
 #include <queue>
 #include <concurrent_unordered_map.h>
+#include "mpsc_queue.h"
 
-using namespace std;
-using namespace chrono;
+using std::set, std::mutex, std::cout, std::wcout, std::endl, std::lock_guard, std::vector, std::make_pair, std::thread;
+using namespace std::chrono;
 #include <WS2tcpip.h>
 #include <MSWSock.h>
 #pragma comment(lib, "Ws2_32.lib")
@@ -19,26 +20,34 @@ using namespace chrono;
 constexpr auto VIEW_RANGE = 3;
 constexpr int MAX_PENDING_RECV = 1000;
 constexpr int MAX_PENDING_SEND = 1000;
-constexpr int client_limit = 5000; // 예상 최대 client 수
+constexpr int client_limit = 10000; // 예상 최대 client 수
+constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND) * client_limit;
 
-RIO_CQ completion_queue;
+struct SendInfo {
+	SendInfo() = default;
+	SendInfo(int id, const char* data) : id{ id }, data{ data } {}
+
+	int id;
+	const char* data;
+};
+
 RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
 PCHAR rio_buffer;
 RIO_BUFFERID rio_buf_id;
-vector<size_t> available_buf_idx;
+MPSCQueue<SendInfo> send_queue;
 
 enum EVENT_TYPE { EV_RECV, EV_SEND, EV_MOVE, EV_PLAYER_MOVE_NOTIFY, EV_MOVE_TARGET, EV_ATTACK, EV_HEAL };
 
-struct OVER_EX {
-	WSAOVERLAPPED over;
-	WSABUF	wsabuf[1];
-	char	net_buf[MAX_BUFFER];
-	EVENT_TYPE	event_type;
-};
-
 struct SOCKETINFO
 {
-	OVER_EX	recv_over;
+	RIO_BUF rio_recv_buf;
+	RIO_BUF rio_send_buf;
+	char* recv_buf;
+	char* send_buf;
+	mutex send_buf_lock;
+	RIO_RQ	rio_rq;
+	RIO_CQ	rio_cq;
+
 	char	pre_net_buf[MAX_BUFFER];
 	int		prev_packet_size;
 	SOCKET	socket;
@@ -54,6 +63,7 @@ struct SOCKETINFO
 
 Concurrency::concurrent_unordered_map <int, SOCKETINFO*> clients;
 HANDLE	g_iocp;
+OVERLAPPED g_over;
 
 int new_user_id = 0;
 
@@ -81,20 +91,26 @@ bool is_near(int a, int b)
 
 void send_packet(int id, void* buff)
 {
+	//char* packet = reinterpret_cast<char*>(buff);
+	//int packet_size = packet[0];
+	//OVER_EX* send_over = new OVER_EX;
+	//memset(send_over, 0x00, sizeof(OVER_EX));
+	//send_over->event_type = EV_SEND;
+	//memcpy(send_over->net_buf, packet, packet_size);
+	//send_over->wsabuf[0].buf = send_over->net_buf;
+	//send_over->wsabuf[0].len = packet_size;
+	//int ret = WSASend(clients[id]->socket, send_over->wsabuf, 1, 0, 0, &send_over->over, 0);
+	//if (0 != ret) {
+	//	int err_no = WSAGetLastError();
+	//	if (WSA_IO_PENDING != err_no)
+	//		error_display("WSARecv Error :", err_no);
+	//}
 	char* packet = reinterpret_cast<char*>(buff);
 	int packet_size = packet[0];
-	OVER_EX* send_over = new OVER_EX;
-	memset(send_over, 0x00, sizeof(OVER_EX));
-	send_over->event_type = EV_SEND;
-	memcpy(send_over->net_buf, packet, packet_size);
-	send_over->wsabuf[0].buf = send_over->net_buf;
-	send_over->wsabuf[0].len = packet_size;
-	int ret = WSASend(clients[id]->socket, send_over->wsabuf, 1, 0, 0, &send_over->over, 0);
-	if (0 != ret) {
-		int err_no = WSAGetLastError();
-		if (WSA_IO_PENDING != err_no)
-			error_display("WSARecv Error :", err_no);
-	}
+
+	char* p_data = new char[packet_size];
+	memcpy_s(p_data, packet_size, packet, packet_size);
+	send_queue.enq(SendInfo(id, p_data));
 }
 
 void send_login_ok_packet(int id)
@@ -221,7 +237,7 @@ void ProcessMove(int id, unsigned char dir)
 	send_pos_packet(id, id);
 	for (auto cl : old_vl) {
 		if (0 != new_vl.count(cl)) {
-				send_pos_packet(cl, id);
+			send_pos_packet(cl, id);
 		}
 		else
 		{
@@ -299,52 +315,83 @@ void do_worker()
 		WSAOVERLAPPED* p_over;
 
 		GetQueuedCompletionStatus(g_iocp, &num_byte, p_key, &p_over, INFINITE);
-		unsigned int key = static_cast<unsigned>(key64);
-		SOCKET client_s = clients[key]->socket;
-		if (num_byte == 0) {
-			Disconnect(key);
-			continue;
-		}  // 클라이언트가 closesocket을 했을 경우		
-		OVER_EX* over_ex = reinterpret_cast<OVER_EX*> (p_over);
+		int key = static_cast<int>(key64);
+		auto client = clients[key];
 
-		if (EV_RECV == over_ex->event_type) {
-			char* p = over_ex->net_buf;
-			int remain = num_byte;
-			int packet_size;
-			int prev_packet_size = clients[key]->prev_packet_size;
-			if (0 == prev_packet_size)
-				packet_size = 0;
-			else packet_size = clients[key]->pre_net_buf[0];
-			while (remain > 0) {
-				if (0 == packet_size) packet_size = p[0];
-				int required = packet_size - prev_packet_size;
-				if (required <= remain) {
-					memcpy(clients[key]->pre_net_buf + prev_packet_size, p, required);
-					ProcessPacket(key, clients[key]->pre_net_buf);
-					remain -= required;
-					p += required;
-					prev_packet_size = 0;
+		RIORESULT results[10];
+		auto num_result = rio_ftable.RIODequeueCompletion(client->rio_cq, results, 10);
+		for (unsigned long i = 0; i < num_result; ++i) {
+			const RIORESULT& result = results[i];
+			SOCKET client_s = result.SocketContext;
+			if (result.BytesTransferred == 0) {
+				Disconnect(key);
+				continue;
+			}  // 클라이언트가 closesocket을 했을 경우		
+			//OVER_EX* over_ex = reinterpret_cast<OVER_EX*> (p_over);
+
+			if (EV_RECV == result.RequestContext) {
+				char* p = client->recv_buf;
+				int remain = num_byte;
+				int packet_size;
+				int prev_packet_size = client->prev_packet_size;
+				if (0 == prev_packet_size)
 					packet_size = 0;
+				else packet_size = client->pre_net_buf[0];
+				while (remain > 0) {
+					if (0 == packet_size) packet_size = p[0];
+					int required = packet_size - prev_packet_size;
+					if (required <= remain) {
+						memcpy(client->pre_net_buf + prev_packet_size, p, required);
+						ProcessPacket(key, client->pre_net_buf);
+						remain -= required;
+						p += required;
+						prev_packet_size = 0;
+						packet_size = 0;
+					}
+					else {
+						memcpy(client->pre_net_buf + prev_packet_size, p, remain);
+						prev_packet_size += remain;
+						remain = 0;
+					}
 				}
-				else {
-					memcpy(clients[key]->pre_net_buf + prev_packet_size, p, remain);
-					prev_packet_size += remain;
-					remain = 0;
-				}
-			}
-			clients[key]->prev_packet_size = prev_packet_size;
+				client->prev_packet_size = prev_packet_size;
 
-			DWORD flags = 0;
-			memset(&over_ex->over, 0x00, sizeof(WSAOVERLAPPED));
-			WSARecv(client_s, over_ex->wsabuf, 1, 0, &flags, &over_ex->over, 0);
+				rio_ftable.RIOReceive(client->rio_rq, &client->rio_recv_buf, 1, 0, (void*)EV_RECV);
+			}
+			else if (EV_SEND == result.RequestContext) {
+			}
+			else {
+				cout << "Unknown Event Type :" << result.RequestContext << endl;
+				while (true);
+			}
 		}
-		else if (EV_SEND == over_ex->event_type) {
-			delete over_ex;
+	}
+}
+
+void broadcast() {
+	while (true) {
+		while (true) {
+			auto retval = send_queue.deq();
+			if (!retval) {
+				break;
+			}
+
+			auto& send_info = *retval;
+			auto client = clients[send_info.id];
+			unsigned char data_size = send_info.data[0];
+
+			lock_guard<mutex> lg{ client->send_buf_lock };
+			memcpy_s(client->send_buf, MAX_BUFFER, send_info.data, data_size);
+			client->rio_send_buf.Length = data_size;
+
+			int ret = rio_ftable.RIOSend(client->rio_rq, &client->rio_send_buf, 1, 0, (void*)EV_SEND);
+			if (0 != ret) {
+				int err_no = WSAGetLastError();
+				if (WSA_IO_PENDING != err_no)
+					error_display("WSASend Error :", err_no);
+			}
 		}
-		else {
-			cout << "Unknown Event Type :" << over_ex->event_type << endl;
-			while (true);
-		}
+		std::this_thread::yield();
 	}
 }
 
@@ -354,19 +401,15 @@ void init_rio(SOCKET listen_sock) {
 	DWORD result;
 	result = WSAIoctl(listen_sock, SIO_GET_MULTIPLE_EXTENSION_FUNCTION_POINTER, &f_table_id, sizeof(GUID), &rio_ftable, sizeof(rio_ftable), &returned_bytes, nullptr, nullptr);
 	if (result == SOCKET_ERROR) {
-		fprintf(stderr, "WSAIoctl with RIO Function Table has failed\n");
+		error_display("WSAIoctl Error(in 'init_rio') :", WSAGetLastError());
 		exit(-1);
 	}
 
-	constexpr int buffer_size = client_limit * MAX_BUFFER;
+	constexpr int buffer_size = client_limit * MAX_BUFFER * 2;
 	rio_buffer = (PCHAR)VirtualAllocEx(GetCurrentProcess(), nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	rio_buf_id = rio_ftable.RIORegisterBuffer(rio_buffer, buffer_size);
-	for (int i = 0; i < client_limit; ++i) {
-		available_buf_idx.push_back(i);
-	}
 
-	constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND) * client_limit;
-	completion_queue = rio_ftable.RIOCreateCompletionQueue(completion_queue_size, nullptr);
+	//completion_queue = rio_ftable.RIOCreateCompletionQueue(completion_queue_size, nullptr);
 }
 
 int main()
@@ -382,7 +425,7 @@ int main()
 	serverAddr.sin_port = htons(SERVER_PORT);
 	serverAddr.sin_addr.S_un.S_addr = htonl(INADDR_ANY);
 	if (SOCKET_ERROR == ::bind(listenSocket, (struct sockaddr*) & serverAddr, sizeof(SOCKADDR_IN))) {
-				error_display("WSARecv Error :", WSAGetLastError());
+		error_display("WSARecv Error :", WSAGetLastError());
 	}
 	listen(listenSocket, 5);
 
@@ -394,8 +437,11 @@ int main()
 	DWORD flags;
 
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
+	ZeroMemory(&g_over, sizeof(g_over));
 	vector <thread> worker_threads;
+	thread broadcaster;
 	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(do_worker);
+
 
 	while (true) {
 		SOCKET clientSocket = accept(listenSocket, (struct sockaddr*) & clientAddr, &addrLen);
@@ -405,30 +451,41 @@ int main()
 				error_display("Accept Error :", err_no);
 		}
 		int user_id = new_user_id++;
+		RIO_NOTIFICATION_COMPLETION rio_noti;
+		rio_noti.Type = RIO_IOCP_COMPLETION;
+		rio_noti.Iocp.IocpHandle = g_iocp;
+		rio_noti.Iocp.Overlapped = &g_over;
+		rio_noti.Iocp.CompletionKey = (void*)user_id;
+
 		SOCKETINFO* new_player = new SOCKETINFO;
 		new_player->id = user_id;
 		new_player->socket = clientSocket;
 		new_player->prev_packet_size = 0;
-		new_player->recv_over.wsabuf[0].len = MAX_BUFFER;
-		new_player->recv_over.wsabuf[0].buf = new_player->recv_over.net_buf;
-		new_player->recv_over.event_type = EV_RECV;
+		new_player->recv_buf = rio_buffer + (user_id * MAX_BUFFER * 2);
+		new_player->send_buf = new_player->recv_buf + MAX_BUFFER;
+		new_player->rio_recv_buf.BufferId = rio_buf_id;
+		new_player->rio_recv_buf.Length = MAX_BUFFER;
+		new_player->rio_recv_buf.Offset = (user_id * MAX_BUFFER * 2);
+		new_player->rio_send_buf.BufferId = rio_buf_id;
+		new_player->rio_send_buf.Length = MAX_BUFFER;
+		new_player->rio_send_buf.Offset = (user_id * MAX_BUFFER * 2) + MAX_BUFFER;
+		new_player->rio_cq = rio_ftable.RIOCreateCompletionQueue(completion_queue_size, &rio_noti);
+		new_player->rio_rq = rio_ftable.RIOCreateRequestQueue(clientSocket, MAX_PENDING_RECV, 1, MAX_PENDING_SEND, 1, new_player->rio_cq, new_player->rio_cq, (void*)clientSocket);
 		new_player->x = 4;
 		new_player->y = 4;
 		clients.insert(make_pair(user_id, new_player));
 
-		CreateIoCompletionPort(reinterpret_cast<HANDLE>(clientSocket), g_iocp, user_id, 0);
-
-		memset(&clients[user_id]->recv_over.over, 0, sizeof(clients[user_id]->recv_over.over));
 		flags = 0;
-		int ret = WSARecv(clientSocket, clients[user_id]->recv_over.wsabuf, 1, NULL,
-			&flags, &(clients[user_id]->recv_over.over), NULL);
+		int ret = rio_ftable.RIOSend(new_player->rio_rq, &new_player->rio_recv_buf, 1, 0, (void*)EV_RECV);
+		//int ret = WSARecv(clientSocket, clients[user_id]->recv_over.wsabuf, 1, NULL,
+		//	&flags, &(clients[user_id]->recv_over.over), NULL);
 		if (0 != ret) {
 			int err_no = WSAGetLastError();
 			if (WSA_IO_PENDING != err_no)
 				error_display("WSARecv Error :", err_no);
 		}
 	}
-	for (auto &th : worker_threads) th.join();
+	for (auto& th : worker_threads) th.join();
 	closesocket(listenSocket);
 	WSACleanup();
 }
