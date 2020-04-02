@@ -385,7 +385,7 @@ void broadcast() {
 			client->rio_send_buf.Length = data_size;
 
 			int ret = rio_ftable.RIOSend(client->rio_rq, &client->rio_send_buf, 1, 0, (void*)EV_SEND);
-			if (0 != ret) {
+			if (TRUE != ret) {
 				int err_no = WSAGetLastError();
 				if (WSA_IO_PENDING != err_no)
 					error_display("WSASend Error :", err_no);
@@ -418,7 +418,7 @@ int main()
 
 	WSADATA WSAData;
 	WSAStartup(MAKEWORD(2, 2), &WSAData);
-	SOCKET listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	SOCKET listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_REGISTERED_IO);
 	SOCKADDR_IN serverAddr;
 	memset(&serverAddr, 0, sizeof(SOCKADDR_IN));
 	serverAddr.sin_family = AF_INET;
@@ -434,12 +434,11 @@ int main()
 	SOCKADDR_IN clientAddr;
 	int addrLen = sizeof(SOCKADDR_IN);
 	memset(&clientAddr, 0, addrLen);
-	DWORD flags;
 
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 	ZeroMemory(&g_over, sizeof(g_over));
 	vector <thread> worker_threads;
-	thread broadcaster;
+	thread broadcaster{ broadcast };
 	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(do_worker);
 
 
@@ -470,19 +469,24 @@ int main()
 		new_player->rio_send_buf.Length = MAX_BUFFER;
 		new_player->rio_send_buf.Offset = (user_id * MAX_BUFFER * 2) + MAX_BUFFER;
 		new_player->rio_cq = rio_ftable.RIOCreateCompletionQueue(completion_queue_size, &rio_noti);
+		if (new_player->rio_cq == RIO_INVALID_CQ) {
+			error_display("RIOCreateCompletionQueue Error :", WSAGetLastError());
+		}
 		new_player->rio_rq = rio_ftable.RIOCreateRequestQueue(clientSocket, MAX_PENDING_RECV, 1, MAX_PENDING_SEND, 1, new_player->rio_cq, new_player->rio_cq, (void*)clientSocket);
+		if (new_player->rio_rq == RIO_INVALID_RQ) {
+			error_display("RIOCreateRequestQueue Error :", WSAGetLastError());
+		}
 		new_player->x = 4;
 		new_player->y = 4;
 		clients.insert(make_pair(user_id, new_player));
 
-		flags = 0;
-		int ret = rio_ftable.RIOSend(new_player->rio_rq, &new_player->rio_recv_buf, 1, 0, (void*)EV_RECV);
+		int ret = rio_ftable.RIOReceive(new_player->rio_rq, &new_player->rio_recv_buf, 1, 0, (void*)EV_RECV);
 		//int ret = WSARecv(clientSocket, clients[user_id]->recv_over.wsabuf, 1, NULL,
 		//	&flags, &(clients[user_id]->recv_over.over), NULL);
-		if (0 != ret) {
+		if (TRUE != ret) {
 			int err_no = WSAGetLastError();
 			if (WSA_IO_PENDING != err_no)
-				error_display("WSARecv Error :", err_no);
+				error_display("RIORecv Error :", err_no);
 		}
 	}
 	for (auto& th : worker_threads) th.join();
