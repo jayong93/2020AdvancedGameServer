@@ -6,9 +6,10 @@
 #include <chrono>
 #include <queue>
 #include <concurrent_unordered_map.h>
+#include <memory>
 #include "mpsc_queue.h"
 
-using std::set, std::mutex, std::cout, std::wcout, std::endl, std::lock_guard, std::vector, std::make_pair, std::thread;
+using std::set, std::mutex, std::cout, std::wcout, std::endl, std::lock_guard, std::vector, std::make_pair, std::thread, std::unique_ptr, std::make_unique;
 using namespace std::chrono;
 #include <WS2tcpip.h>
 #include <MSWSock.h>
@@ -25,10 +26,10 @@ constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
 
 struct SendInfo {
 	SendInfo() = default;
-	SendInfo(int id, const char* data) : id{ id }, data{ data } {}
+	SendInfo(int id, unique_ptr<char[]>&& data) : id{ id }, data{ std::move(data) } {}
 
 	int id;
-	const char* data;
+	unique_ptr<char[]> data;
 };
 
 RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
@@ -108,9 +109,9 @@ void send_packet(int id, void* buff)
 	char* packet = reinterpret_cast<char*>(buff);
 	int packet_size = packet[0];
 
-	char* p_data = new char[packet_size];
-	memcpy_s(p_data, packet_size, packet, packet_size);
-	send_queue.enq(SendInfo(id, p_data));
+	unique_ptr<char[]> p_data = make_unique<char[]>(packet_size);
+	memcpy_s(p_data.get(), packet_size, packet, packet_size);
+	send_queue.enq(SendInfo(id, std::move(p_data)));
 }
 
 void send_login_ok_packet(int id)
@@ -382,7 +383,7 @@ void broadcast() {
 			unsigned char data_size = send_info.data[0];
 
 			lock_guard<mutex> lg{ client->send_buf_lock };
-			memcpy_s(client->send_buf, MAX_BUFFER, send_info.data, data_size);
+			memcpy_s(client->send_buf, MAX_BUFFER, send_info.data.get(), data_size);
 			client->rio_send_buf.Length = data_size;
 
 			int ret = rio_ftable.RIOSend(client->rio_rq, &client->rio_send_buf, 1, 0, (void*)EV_SEND);
