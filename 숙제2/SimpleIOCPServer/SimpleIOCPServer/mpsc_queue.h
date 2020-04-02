@@ -6,20 +6,9 @@
 #include <vector>
 #include <algorithm>
 
-template <typename T>
-struct QueueNode;
-
 struct ThreadEpoch {
 	std::atomic_ullong epoch{ ULLONG_MAX };
 	std::atomic<ThreadEpoch*> next{ nullptr };
-};
-
-template <typename T>
-struct RetiredNode {
-	RetiredNode(QueueNode<T>* node, unsigned long long epoch) : node{ node }, removed_epoch{ epoch } {}
-
-	QueueNode<T>* node{ nullptr };
-	unsigned long long removed_epoch;
 };
 
 static std::atomic_ullong g_epoch{ 0 };
@@ -45,10 +34,19 @@ static void initialize_thread_epoch() {
 template <typename T>
 struct QueueNode {
 	QueueNode<T>() = default;
+	QueueNode<T>(T& val) : value{ val } {}
 	QueueNode<T>(T&& val) : value{ std::forward(val) } {}
 
 	T value;
 	std::atomic<QueueNode<T>*> next = nullptr;
+};
+
+template <typename T>
+struct RetiredNode {
+	RetiredNode(QueueNode<T>* node, unsigned long long epoch) : node{ node }, removed_epoch{ epoch } {}
+
+	QueueNode<T>* node{ nullptr };
+	unsigned long long removed_epoch;
 };
 
 template <typename T>
@@ -63,11 +61,13 @@ private:
 	void end_op();
 	void retire(QueueNode<T>* node);
 	void empty();
+	void inner_enq(QueueNode<T>& node);
 
 public:
 	MPSCQueue<T>() : head{ new QueueNode<T> }, tail{ head } {}
 
 	std::optional<T>&& deq();
+	void enq(T& val);
 	void enq(T&& val);
 };
 
@@ -120,6 +120,27 @@ inline void MPSCQueue<T>::empty()
 }
 
 template<typename T>
+inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
+{
+	start_op();
+	QueueNode<T>* old_tail;
+	while (true) {
+		old_tail = tail.load(std::memory_order_relaxed);
+		auto old_next = old_tail->next.load(std::memory_order_relaxed);
+		if (old_next != nullptr) {
+			tail.compare_exchange_strong(old_tail, old_next);
+			continue;
+		}
+
+		if (true == old_tail->next.compare_exchange_strong(old_next, &new_node)) {
+			tail.compare_exchange_strong(old_tail, old_next);
+			break;
+		}
+	}
+	end_op();
+}
+
+template<typename T>
 inline std::optional<T>&& MPSCQueue<T>::deq()
 {
 	start_op();
@@ -138,23 +159,13 @@ inline std::optional<T>&& MPSCQueue<T>::deq()
 }
 
 template<typename T>
-void MPSCQueue<T>::enq(T&& val)
+void MPSCQueue<T>::enq(T& val)
 {
-	start_op();
-	auto new_node = new QueueNode<T>{ forward(val) };
-	QueueNode<T>* old_tail;
-	while (true) {
-		old_tail = tail.load(std::memory_order_relaxed);
-		auto old_next = old_tail->next.load(std::memory_order_relaxed);
-		if (old_next != nullptr) {
-			tail.compare_exchange_strong(old_tail, old_next);
-			continue;
-		}
+	this->inner_enq(*new QueueNode<T>{ val });
+}
 
-		if (true == old_tail->next.compare_exchange_strong(old_next, new_node)) {
-			tail.compare_exchange_strong(old_tail, old_next));
-			break;
-		}
-	}
-	end_op();
+template<typename T>
+inline void MPSCQueue<T>::enq(T&& val)
+{
+	this->inner_enq(*new QueueNode<T>{ std::move(val) });
 }
