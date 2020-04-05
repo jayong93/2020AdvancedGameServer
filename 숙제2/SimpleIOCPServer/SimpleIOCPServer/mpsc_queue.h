@@ -34,7 +34,7 @@ static void initialize_thread_epoch() {
 template <typename T>
 struct QueueNode {
 	QueueNode<T>() = default;
-	QueueNode<T>(T& val) : value{ val } {}
+	QueueNode<T>(const T& val) : value{ val } {}
 	QueueNode<T>(T&& val) : value{ std::move(val) } {}
 
 	T value;
@@ -73,7 +73,7 @@ public:
 	MPSCQueue<T>() : head{ new QueueNode<T> }, tail{ head } {}
 
 	std::optional<T> deq();
-	void enq(T& val);
+	void enq(const T& val);
 	void enq(T&& val);
 };
 
@@ -166,7 +166,7 @@ inline std::optional<T> MPSCQueue<T>::deq()
 }
 
 template<typename T>
-inline void MPSCQueue<T>::enq(T& val)
+inline void MPSCQueue<T>::enq(const T& val)
 {
 	this->inner_enq(*new QueueNode<T>{ val });
 }
