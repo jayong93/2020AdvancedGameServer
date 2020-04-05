@@ -38,13 +38,13 @@ RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
 PCHAR rio_buffer;
 RIO_BUFFERID rio_buf_id;
 MPSCQueue<SendInfo> send_queue;
-MPSCQueue<RIO_BUF> empty_send_bufs;
+MPSCQueue<RIO_BUF*> empty_send_bufs;
 
 enum EVENT_TYPE { EV_RECV, EV_SEND, EV_MOVE, EV_PLAYER_MOVE_NOTIFY, EV_MOVE_TARGET, EV_ATTACK, EV_HEAL };
 
 struct RequestInfo {
 	EVENT_TYPE type;
-	RIO_BUF rio_buf;
+	RIO_BUF* rio_buf;
 };
 
 struct SOCKETINFO
@@ -75,10 +75,10 @@ int new_user_id = 0;
 
 void init_send_bufs(RIO_BUFFERID buf_id) {
 	for (auto i = 0; i < send_buf_num; ++i) {
-		RIO_BUF buf;
-		buf.BufferId = buf_id;
-		buf.Offset = (client_limit + i) * MAX_BUFFER;
-		buf.Length = MAX_BUFFER;
+		auto buf = new RIO_BUF;
+		buf->BufferId = buf_id;
+		buf->Offset = (client_limit + i) * MAX_BUFFER;
+		buf->Length = MAX_BUFFER;
 		empty_send_bufs.enq(buf);
 	}
 }
@@ -347,6 +347,9 @@ void do_worker()
 			auto req_info = (RequestInfo*)(result.RequestContext);
 
 			if (result.BytesTransferred == 0) {
+				if (EV_RECV == req_info->type) {
+					delete req_info->rio_buf;
+				}
 				delete req_info;
 				Disconnect(key);
 				continue;
@@ -383,7 +386,7 @@ void do_worker()
 
 				{
 					lock_guard<mutex> lg{ client->rq_lock };
-					int ret = rio_ftable.RIOReceive(client->rio_rq, &req_info->rio_buf, 1, 0, (void*)req_info);
+					int ret = rio_ftable.RIOReceive(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
 					if (TRUE != ret) {
 						int err_no = WSAGetLastError();
 						if (WSA_IO_PENDING != err_no)
@@ -415,25 +418,25 @@ void broadcast() {
 			auto client = clients[send_info.id];
 			unsigned char data_size = send_info.data[0];
 
-			std::optional<RIO_BUF> rio_buf;
+			std::optional<RIO_BUF*> rio_buf;
 			while (true) {
 				rio_buf = empty_send_bufs.deq();
 				if (!rio_buf) std::this_thread::yield();
 				else break;
 			}
 
-			auto send_buf = get_send_buf(*rio_buf);
+			auto send_buf = get_send_buf(**rio_buf);
 
 			memcpy_s(send_buf, MAX_BUFFER, send_info.data.get(), data_size);
 
 			auto req_info = new RequestInfo;
 			req_info->type = EV_SEND;
 			req_info->rio_buf = *rio_buf;
-			req_info->rio_buf.Length = data_size;
+			req_info->rio_buf->Length = data_size;
 
 			{
 				lock_guard<mutex> lg{ client->rq_lock };
-				int ret = rio_ftable.RIOSend(client->rio_rq, &req_info->rio_buf, 1, 0, (void*)req_info);
+				int ret = rio_ftable.RIOSend(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
 				if (TRUE != ret) {
 					int err_no = WSAGetLastError();
 					if (WSA_IO_PENDING != err_no)
@@ -533,13 +536,14 @@ int main()
 
 		auto req_info = new RequestInfo;
 		req_info->type = EV_RECV;
-		req_info->rio_buf.BufferId = rio_buf_id;
-		req_info->rio_buf.Length = MAX_BUFFER;
-		req_info->rio_buf.Offset = user_id * MAX_BUFFER;
+		req_info->rio_buf = new RIO_BUF;
+		req_info->rio_buf->BufferId = rio_buf_id;
+		req_info->rio_buf->Length = MAX_BUFFER;
+		req_info->rio_buf->Offset = user_id * MAX_BUFFER;
 
 		{
 			lock_guard<mutex> lg{ new_player->rq_lock };
-			int ret = rio_ftable.RIOReceive(new_player->rio_rq, &req_info->rio_buf, 1, 0, (void*)req_info);
+			int ret = rio_ftable.RIOReceive(new_player->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
 			if (TRUE != ret) {
 				int err_no = WSAGetLastError();
 				if (WSA_IO_PENDING != err_no)
