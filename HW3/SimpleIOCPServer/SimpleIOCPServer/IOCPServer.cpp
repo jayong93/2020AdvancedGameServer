@@ -27,7 +27,7 @@ constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
 constexpr int send_buf_num = 10000;
 
 float rand_float(float min, float max) {
-	return ((float)rand() / (float)RAND_MAX)*(max-min) + min;
+	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
 }
 
 struct SendInfo {
@@ -359,6 +359,9 @@ void do_worker()
 				if (EV_RECV == req_info->type) {
 					delete req_info->rio_buf;
 				}
+				else if (EV_SEND == req_info->type) {
+					empty_send_bufs.enq(req_info->rio_buf);
+				}
 				delete req_info;
 				Disconnect(key);
 				continue;
@@ -454,6 +457,7 @@ void broadcast() {
 					case WSAECONNRESET:
 					case WSAECONNABORTED:
 					case WSAENOTSOCK:
+						empty_send_bufs.enq(*rio_buf);
 						Disconnect(send_info.id);
 						break;
 					default:
