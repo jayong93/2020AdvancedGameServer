@@ -20,9 +20,9 @@ using namespace std::chrono;
 
 #define MAX_BUFFER        1024
 constexpr auto VIEW_RANGE = 7;
-constexpr int MAX_PENDING_RECV = 1000;
-constexpr int MAX_PENDING_SEND = 1000;
-constexpr int client_limit = 10000; // 예상 최대 client 수
+constexpr int MAX_PENDING_RECV = 10;
+constexpr int MAX_PENDING_SEND = 100;
+constexpr int client_limit = 20000; // 예상 최대 client 수
 constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
 constexpr int send_buf_num = 10000;
 
