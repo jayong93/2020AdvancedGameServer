@@ -39,18 +39,19 @@ struct SendInfo {
 	unique_ptr<char[]> data;
 };
 
-RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
-PCHAR rio_buffer;
-RIO_BUFFERID rio_buf_id;
-MPSCQueue<SendInfo> send_queue;
-MPSCQueue<RIO_BUF*> empty_send_bufs;
-
 enum EVENT_TYPE { EV_RECV, EV_SEND, EV_MOVE, EV_PLAYER_MOVE_NOTIFY, EV_MOVE_TARGET, EV_ATTACK, EV_HEAL };
 
 struct RequestInfo {
 	EVENT_TYPE type;
 	RIO_BUF* rio_buf;
+	int thread_id;
 };
+
+RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
+PCHAR rio_buffer;
+RIO_BUFFERID rio_buf_id;
+MPSCQueue<RequestInfo*> empty_send_bufs[thread_num];
+thread_local int thread_id;
 
 struct SOCKETINFO
 {
@@ -80,12 +81,20 @@ HANDLE	g_iocp;
 int new_user_id = 0;
 
 void init_send_bufs(RIO_BUFFERID buf_id) {
-	for (auto i = 0; i < send_buf_num; ++i) {
-		auto buf = new RIO_BUF;
-		buf->BufferId = buf_id;
-		buf->Offset = (client_limit + i) * MAX_BUFFER;
-		buf->Length = MAX_BUFFER;
-		empty_send_bufs.enq(buf);
+	for (size_t i = 0; i < thread_num; i++)
+	{
+		for (auto j = 0; j < (send_buf_num / thread_num); ++j) {
+			auto buf = new RIO_BUF;
+			buf->BufferId = buf_id;
+			buf->Offset = (client_limit + (send_buf_num / thread_num) * i + j) * MAX_BUFFER;
+			buf->Length = MAX_BUFFER;
+
+			auto req_info = new RequestInfo;
+			req_info->type = EV_SEND;
+			req_info->rio_buf = buf;
+			req_info->thread_id = i;
+			empty_send_bufs[i].enq(req_info);
+		}
 	}
 }
 
@@ -115,28 +124,46 @@ bool is_near(int a, int b)
 	return true;
 }
 
+void Disconnect(int id);
+
 void send_packet(int id, void* buff)
 {
-	//char* packet = reinterpret_cast<char*>(buff);
-	//int packet_size = packet[0];
-	//OVER_EX* send_over = new OVER_EX;
-	//memset(send_over, 0x00, sizeof(OVER_EX));
-	//send_over->event_type = EV_SEND;
-	//memcpy(send_over->net_buf, packet, packet_size);
-	//send_over->wsabuf[0].buf = send_over->net_buf;
-	//send_over->wsabuf[0].len = packet_size;
-	//int ret = WSASend(clients[id]->socket, send_over->wsabuf, 1, 0, 0, &send_over->over, 0);
-	//if (0 != ret) {
-	//	int err_no = WSAGetLastError();
-	//	if (WSA_IO_PENDING != err_no)
-	//		error_display("WSARecv Error :", err_no);
-	//}
-	if (false == clients[id]->is_connected) { return; }
+	auto client = clients[id];
+	if (false == client->is_connected) { return; }
 
 	char* packet = reinterpret_cast<char*>(buff);
+	auto data_size = packet[0];
 
-	unique_ptr<char[]> p_data{ packet };
-	send_queue.enq(SendInfo(id, std::move(p_data)));
+	std::optional<RequestInfo*> req_info;
+	while (true) {
+		req_info = empty_send_bufs[thread_id].deq();
+		if (req_info) {
+			break;
+		}
+	}
+	memcpy_s(rio_buffer + ((*req_info)->rio_buf->Offset), MAX_BUFFER, packet, data_size);
+	(*req_info)->rio_buf->Length = data_size;
+
+	int ret;
+	{
+		lock_guard<mutex> lg{ client->rq_lock };
+		ret = rio_ftable.RIOSend(client->rio_rq, (*req_info)->rio_buf, 1, 0, (void*)*req_info);
+	}
+	if (TRUE != ret) {
+		int err_no = WSAGetLastError();
+		switch (err_no) {
+		case WSA_IO_PENDING:
+			break;
+		case WSAECONNRESET:
+		case WSAECONNABORTED:
+		case WSAENOTSOCK:
+			empty_send_bufs[thread_id].enq(*req_info);
+			Disconnect(id);
+			break;
+		default:
+			error_display("WSASend Error :", err_no);
+		}
+	}
 }
 
 void send_login_ok_packet(int id)
@@ -335,8 +362,9 @@ void ProcessPacket(int id, void* buff)
 	}
 }
 
-void do_worker()
+void do_worker(int t_id)
 {
+	thread_id = t_id;
 	while (true) {
 		DWORD num_byte;
 		ULONGLONG key64;
@@ -359,11 +387,11 @@ void do_worker()
 			if (result.BytesTransferred == 0) {
 				if (EV_RECV == req_info->type) {
 					delete req_info->rio_buf;
+					delete req_info;
 				}
 				else if (EV_SEND == req_info->type) {
-					empty_send_bufs.enq(req_info->rio_buf);
+					empty_send_bufs[req_info->thread_id].enq(req_info);
 				}
-				delete req_info;
 				Disconnect(key);
 				continue;
 			}  // 클라이언트가 closesocket을 했을 경우		
@@ -409,64 +437,11 @@ void do_worker()
 				}
 			}
 			else if (EV_SEND == req_info->type) {
-				empty_send_bufs.enq(req_info->rio_buf);
-				delete req_info;
+				empty_send_bufs[req_info->thread_id].enq(req_info);
 			}
 			else {
 				cout << "Unknown Event Type :" << result.RequestContext << endl;
 				while (true);
-			}
-		}
-	}
-}
-
-void broadcast() {
-	while (true) {
-		while (true) {
-			auto retval = send_queue.deq();
-			if (!retval) {
-				break;
-			}
-
-			auto& send_info = *retval;
-			auto client = clients[send_info.id];
-			unsigned char data_size = send_info.data[0];
-
-			std::optional<RIO_BUF*> rio_buf;
-			while (true) {
-				rio_buf = empty_send_bufs.deq();
-				if (!rio_buf) std::this_thread::yield();
-				else break;
-			}
-
-			auto send_buf = get_send_buf(**rio_buf);
-
-			memcpy_s(send_buf, MAX_BUFFER, send_info.data.get(), data_size);
-
-			auto req_info = new RequestInfo;
-			req_info->type = EV_SEND;
-			req_info->rio_buf = *rio_buf;
-			req_info->rio_buf->Length = data_size;
-
-			int ret;
-			{
-				lock_guard<mutex> lg{ client->rq_lock };
-				ret = rio_ftable.RIOSend(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-			}
-			if (TRUE != ret) {
-				int err_no = WSAGetLastError();
-				switch (err_no) {
-				case WSA_IO_PENDING:
-					break;
-				case WSAECONNRESET:
-				case WSAECONNABORTED:
-				case WSAENOTSOCK:
-					empty_send_bufs.enq(*rio_buf);
-					Disconnect(send_info.id);
-					break;
-				default:
-					error_display("WSASend Error :", err_no);
-				}
 			}
 		}
 	}
@@ -515,8 +490,7 @@ int main()
 
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 	vector <thread> worker_threads;
-	thread broadcaster{ broadcast };
-	for (int i = 0; i < thread_num; ++i) worker_threads.emplace_back(do_worker);
+	for (int i = 0; i < thread_num; ++i) worker_threads.emplace_back(do_worker, i);
 
 
 	while (true) {
