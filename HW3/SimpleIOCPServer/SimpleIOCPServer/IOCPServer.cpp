@@ -25,6 +25,7 @@ constexpr int MAX_PENDING_SEND = 100;
 constexpr int client_limit = 20000; // 예상 최대 client 수
 constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
 constexpr int send_buf_num = 10000;
+constexpr int thread_num = 8;
 
 float rand_float(float min, float max) {
 	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
@@ -513,7 +514,7 @@ int main()
 	g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 	vector <thread> worker_threads;
 	thread broadcaster{ broadcast };
-	for (int i = 0; i < 4; ++i) worker_threads.emplace_back(do_worker);
+	for (int i = 0; i < thread_num; ++i) worker_threads.emplace_back(do_worker);
 
 
 	while (true) {
