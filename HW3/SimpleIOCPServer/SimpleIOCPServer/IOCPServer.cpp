@@ -397,14 +397,15 @@ void do_worker()
 				}
 				client->prev_packet_size = prev_packet_size;
 
+				int ret;
 				{
 					lock_guard<mutex> lg{ client->rq_lock };
-					int ret = rio_ftable.RIOReceive(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-					if (TRUE != ret) {
-						int err_no = WSAGetLastError();
-						if (WSA_IO_PENDING != err_no)
-							error_display("WSAReceive Error :", err_no);
-					}
+					ret = rio_ftable.RIOReceive(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
+				}
+				if (TRUE != ret) {
+					int err_no = WSAGetLastError();
+					if (WSA_IO_PENDING != err_no)
+						error_display("WSAReceive Error :", err_no);
 				}
 			}
 			else if (EV_SEND == req_info->type) {
@@ -447,23 +448,24 @@ void broadcast() {
 			req_info->rio_buf = *rio_buf;
 			req_info->rio_buf->Length = data_size;
 
+			int ret;
 			{
 				lock_guard<mutex> lg{ client->rq_lock };
-				int ret = rio_ftable.RIOSend(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-				if (TRUE != ret) {
-					int err_no = WSAGetLastError();
-					switch (err_no) {
-					case WSA_IO_PENDING:
-						break;
-					case WSAECONNRESET:
-					case WSAECONNABORTED:
-					case WSAENOTSOCK:
-						empty_send_bufs.enq(*rio_buf);
-						Disconnect(send_info.id);
-						break;
-					default:
-						error_display("WSASend Error :", err_no);
-					}
+				ret = rio_ftable.RIOSend(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
+			}
+			if (TRUE != ret) {
+				int err_no = WSAGetLastError();
+				switch (err_no) {
+				case WSA_IO_PENDING:
+					break;
+				case WSAECONNRESET:
+				case WSAECONNABORTED:
+				case WSAENOTSOCK:
+					empty_send_bufs.enq(*rio_buf);
+					Disconnect(send_info.id);
+					break;
+				default:
+					error_display("WSASend Error :", err_no);
 				}
 			}
 		}
@@ -564,14 +566,15 @@ int main()
 		req_info->rio_buf->Length = MAX_BUFFER;
 		req_info->rio_buf->Offset = user_id * MAX_BUFFER;
 
+		int ret;
 		{
 			lock_guard<mutex> lg{ new_player->rq_lock };
-			int ret = rio_ftable.RIOReceive(new_player->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-			if (TRUE != ret) {
-				int err_no = WSAGetLastError();
-				if (WSA_IO_PENDING != err_no)
-					error_display("RIORecv Error :", err_no);
-			}
+			ret = rio_ftable.RIOReceive(new_player->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
+		}
+		if (TRUE != ret) {
+			int err_no = WSAGetLastError();
+			if (WSA_IO_PENDING != err_no)
+				error_display("RIORecv Error :", err_no);
 		}
 		rio_ftable.RIONotify(new_player->rio_cq);
 	}
