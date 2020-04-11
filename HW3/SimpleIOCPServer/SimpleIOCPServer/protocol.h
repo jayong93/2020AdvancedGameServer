@@ -1,9 +1,10 @@
 #pragma once
 
+constexpr int MAX_ID_LEN = 50;
 constexpr int MAX_STR_LEN = 50;
 
-#define WORLD_WIDTH		800
-#define WORLD_HEIGHT	800
+#define WORLD_WIDTH		400
+#define WORLD_HEIGHT	400
 
 #define NPC_ID_START	20000
 
@@ -83,7 +84,7 @@ struct sc_packet_stat_change {
 struct cs_packet_login {
 	char	size;
 	char	type;
-	char	id[50];
+	char	id[MAX_ID_LEN];
 };
 
 constexpr unsigned char D_UP = 0;
