@@ -20,11 +20,11 @@ using namespace std::chrono;
 
 #define MAX_BUFFER        1024
 constexpr auto VIEW_RANGE = 7;
-constexpr int MAX_PENDING_RECV = 10;
-constexpr int MAX_PENDING_SEND = 100;
+constexpr int MAX_PENDING_RECV = 100;
+constexpr int MAX_PENDING_SEND = 500;
 constexpr int client_limit = 20000; // 예상 최대 client 수
 constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
-constexpr int send_buf_num = 10000;
+constexpr int send_buf_num = 50000;
 constexpr int thread_num = 8;
 
 float rand_float(float min, float max) {
@@ -134,13 +134,34 @@ void send_packet(int id, void* buff)
 	char* packet = reinterpret_cast<char*>(buff);
 	auto data_size = packet[0];
 
-	std::optional<RequestInfo*> req_info;
-	while (true) {
-		req_info = empty_send_bufs[thread_id].deq();
-		if (req_info) {
-			break;
+	std::optional<RequestInfo*> req_info = empty_send_bufs[thread_id].deq();
+	if (!req_info) {
+		constexpr int buffer_size = (send_buf_num / thread_num) * MAX_BUFFER;
+		auto buf = (PCHAR)VirtualAllocEx(GetCurrentProcess(), nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		auto buf_id = rio_ftable.RIORegisterBuffer(buf, buffer_size);
+
+		auto req = new RequestInfo;
+		req->thread_id = thread_id;
+		req->type = EV_SEND;
+		req->rio_buf = new RIO_BUF;
+		req->rio_buf->BufferId = buf_id;
+		req->rio_buf->Length = MAX_BUFFER;
+		req->rio_buf->Offset = 0;
+		req_info = req;
+
+		for (auto i = 1; i < buffer_size / MAX_BUFFER; ++i) {
+			auto req = new RequestInfo;
+			req->thread_id = thread_id;
+			req->type = EV_SEND;
+			req->rio_buf = new RIO_BUF;
+			req->rio_buf->BufferId = buf_id;
+			req->rio_buf->Length = MAX_BUFFER;
+			req->rio_buf->Offset = i * MAX_BUFFER;
+
+			empty_send_bufs[thread_id].enq(req);
 		}
 	}
+
 	memcpy_s(rio_buffer + ((*req_info)->rio_buf->Offset), MAX_BUFFER, packet, data_size);
 	(*req_info)->rio_buf->Length = data_size;
 
@@ -168,7 +189,7 @@ void send_packet(int id, void* buff)
 
 void send_login_ok_packet(int id)
 {
-	sc_packet_login_ok& packet = *new sc_packet_login_ok;
+	sc_packet_login_ok packet;
 	packet.id = id;
 	packet.size = sizeof(packet);
 	packet.type = SC_LOGIN_OK;
@@ -182,7 +203,7 @@ void send_login_ok_packet(int id)
 
 void send_login_fail(int id)
 {
-	sc_packet_login_fail& packet = *new sc_packet_login_fail;
+	sc_packet_login_fail packet;
 	packet.size = sizeof(packet);
 	packet.type = SC_LOGIN_FAIL;
 	send_packet(id, &packet);
@@ -190,7 +211,7 @@ void send_login_fail(int id)
 
 void send_put_object_packet(int client, int new_id)
 {
-	sc_packet_put_object& packet = *new sc_packet_put_object;
+	sc_packet_put_object packet;
 	packet.id = new_id;
 	packet.size = sizeof(packet);
 	packet.type = SC_PUT_OBJECT;
@@ -206,7 +227,7 @@ void send_put_object_packet(int client, int new_id)
 
 void send_pos_packet(int client, int mover)
 {
-	sc_packet_pos& packet = *new sc_packet_pos;
+	sc_packet_pos packet;
 	packet.id = mover;
 	packet.size = sizeof(packet);
 	packet.type = SC_POS;
@@ -227,7 +248,7 @@ void send_pos_packet(int client, int mover)
 
 void send_remove_object_packet(int client, int leaver)
 {
-	sc_packet_remove_object& packet = *new sc_packet_remove_object;
+	sc_packet_remove_object packet;
 	packet.id = leaver;
 	packet.size = sizeof(packet);
 	packet.type = SC_REMOVE_OBJECT;
