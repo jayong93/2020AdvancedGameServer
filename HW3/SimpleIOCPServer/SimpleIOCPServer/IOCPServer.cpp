@@ -542,6 +542,8 @@ int main()
 	for (int i = 0; i < thread_num; ++i) worker_threads.emplace_back(do_worker, i);
 
 
+	printf("Server has started\n");
+
 	while (true) {
 		SOCKET clientSocket = accept(listenSocket, (struct sockaddr*) & clientAddr, &addrLen);
 		if (INVALID_SOCKET == clientSocket) {
