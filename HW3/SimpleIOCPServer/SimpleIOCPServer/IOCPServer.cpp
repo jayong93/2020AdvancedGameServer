@@ -24,7 +24,7 @@ constexpr int MAX_PENDING_RECV = 100;
 constexpr int MAX_PENDING_SEND = 500;
 constexpr int client_limit = 20000; // 예상 최대 client 수
 constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
-constexpr int send_buf_num = 50000;
+constexpr int send_buf_num = client_limit * 50;
 constexpr int thread_num = 8;
 
 float rand_float(float min, float max) {
@@ -258,6 +258,15 @@ void send_remove_object_packet(int client, int leaver)
 	clients[client]->near_id.erase(leaver);
 }
 
+void send_chat_packet(int client, int teller, char* mess)
+{
+	sc_packet_chat packet;
+	packet.id = teller;
+	packet.size = sizeof(packet);
+	packet.type = SC_CHAT;
+	send_packet(client, &packet);
+}
+
 bool is_near_id(int player, int other)
 {
 	lock_guard <mutex> gl{ clients[player]->near_lock };
@@ -354,6 +363,17 @@ void ProcessLogin(int user_id, char* id_str)
 	}
 }
 
+void ProcessChat(int id, char* mess)
+{
+
+	clients[id]->near_lock.lock();
+	auto vl = clients[id]->near_id;
+	clients[id]->near_lock.unlock();
+
+	for (auto cl : vl)
+		send_chat_packet(cl, id, mess);
+}
+
 void ProcessPacket(int id, void* buff)
 {
 	char* packet = reinterpret_cast<char*>(buff);
@@ -372,7 +392,11 @@ void ProcessPacket(int id, void* buff)
 	case CS_ATTACK:
 		break;
 	case CS_CHAT:
-		break;
+	{
+		cs_packet_chat* chat_packet = reinterpret_cast<cs_packet_chat*>(packet);
+		ProcessChat(id, chat_packet->chat_str);
+	}
+	break;
 	case CS_LOGOUT:
 		break;
 	case CS_TELEPORT:
@@ -398,6 +422,10 @@ void do_worker(int t_id)
 
 		RIORESULT results[10];
 		auto num_result = rio_ftable.RIODequeueCompletion(client->rio_cq, results, 10);
+		if (RIO_CORRUPT_CQ == num_result) {
+			error_display("RIODequeueCompletion error", WSAGetLastError());
+			exit(-1);
+		}
 		rio_ftable.RIONotify(client->rio_cq); // client의 rio_cq에서 필요한 만큼 dequeue를 끝냈으므로 다른 worker thread에게 처리를 넘겨도 됨.
 
 		for (unsigned long i = 0; i < num_result; ++i) {
