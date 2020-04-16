@@ -268,8 +268,9 @@ void ProcessLogin(int user_id, char* id_str)
 	//		return;
 	//	}
 	//}
-	strcpy_s(clients[user_id]->name, id_str);
-	clients[user_id]->is_connected = true;
+	auto client = clients[user_id];
+	strcpy_s(client->name, id_str);
+	client->is_connected = true;
 	send_login_ok_packet(user_id);
 
 
