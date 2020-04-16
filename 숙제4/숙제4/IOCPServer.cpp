@@ -403,6 +403,7 @@ int main()
 		tcp::acceptor acceptor(context, tcp::endpoint(tcp::v4(), SERVER_PORT));
 		acceptor.async_accept([&acceptor](boost_error error, tcp::socket sock) {handle_accept(error, sock, acceptor); });
 		for (int i = 0; i < 8; ++i) worker_threads.emplace_back([&context]() {context.run(); });
+		cerr << "Server has started" << endl;
 		for (auto& th : worker_threads) th.join();
 	}
 	catch (const std::exception& e)

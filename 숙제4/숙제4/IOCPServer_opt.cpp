@@ -420,6 +420,8 @@ int main()
 	vector <thread> worker_threads;
 	for (int i = 0; i < 8; ++i) worker_threads.emplace_back(do_worker);
 
+	cerr << "Server has started" << endl;
+
 	while (true) {
 		SOCKET clientSocket = accept(listenSocket, (struct sockaddr*) & clientAddr, &addrLen);
 		if (INVALID_SOCKET == clientSocket) {
