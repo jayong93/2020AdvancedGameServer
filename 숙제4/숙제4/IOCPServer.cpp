@@ -115,12 +115,13 @@ void send_login_fail(int id)
 void send_put_object_packet(int client_id, int new_id)
 {
 	auto client = clients[client_id];
+	auto new_client = clients[new_id];
 	sc_packet_put_object packet;
 	packet.id = new_id;
 	packet.size = sizeof(packet);
 	packet.type = SC_PUT_OBJECT;
-	packet.x = client->x;
-	packet.y = client->y;
+	packet.x = new_client->x;
+	packet.y = new_client->y;
 	packet.o_type = 1;
 	send_packet(client_id, &packet);
 
@@ -129,25 +130,26 @@ void send_put_object_packet(int client_id, int new_id)
 	client->near_id.insert(new_id);
 }
 
-void send_pos_packet(int client_id, int mover)
+void send_pos_packet(int client_id, int mover_id)
 {
 	auto client = clients[client_id];
+	auto mover = clients[mover_id];
 	sc_packet_pos packet;
-	packet.id = mover;
+	packet.id = mover_id;
 	packet.size = sizeof(packet);
 	packet.type = SC_POS;
-	packet.x = client->x;
-	packet.y = client->y;
+	packet.x = mover->x;
+	packet.y = mover->y;
 	packet.seq_no = client->seq_no;
 
 	client->near_lock.lock();
-	if ((client_id == mover) || (0 != client->near_id.count(mover))) {
+	if ((client_id == mover_id) || (0 != client->near_id.count(mover_id))) {
 		client->near_lock.unlock();
 		send_packet(client_id, &packet);
 	}
 	else {
 		client->near_lock.unlock();
-		send_put_object_packet(client_id, mover);
+		send_put_object_packet(client_id, mover_id);
 	}
 }
 
