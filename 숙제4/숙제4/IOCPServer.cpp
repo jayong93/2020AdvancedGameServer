@@ -65,8 +65,10 @@ void error_display(const char* msg, int err_no)
 
 bool is_near(int a, int b)
 {
-	if (VIEW_RANGE < abs(clients[a]->x - clients[b]->x)) return false;
-	if (VIEW_RANGE < abs(clients[a]->y - clients[b]->y)) return false;
+	auto client_a = clients[a];
+	auto client_b = clients[b];
+	if (VIEW_RANGE < abs(client_a->x - client_b->x)) return false;
+	if (VIEW_RANGE < abs(client_a->y - client_b->y)) return false;
 	return true;
 }
 
@@ -250,10 +252,10 @@ void ProcessMove(int id, unsigned char dir)
 
 void ProcessChat(int id, char* mess)
 {
-
-	clients[id]->near_lock.lock();
-	auto vl = clients[id]->near_id;
-	clients[id]->near_lock.unlock();
+	auto client = clients[id];
+	client->near_lock.lock();
+	auto vl = client->near_id;
+	client->near_lock.unlock();
 
 	for (auto cl : vl)
 		send_chat_packet(cl, id, mess);
