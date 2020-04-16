@@ -18,10 +18,10 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="IOCPServer.cpp">
+    <ClCompile Include="IOCPServer_opt.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="IOCPServer_opt.cpp">
+    <ClCompile Include="AsioServer.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
