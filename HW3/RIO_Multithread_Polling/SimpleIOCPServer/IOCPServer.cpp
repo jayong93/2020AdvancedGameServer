@@ -257,7 +257,7 @@ void Disconnect(int id)
 {
 	clients[id]->is_connected = false;
 	closesocket(clients[id]->socket);
-	printf("User #%d has disconnected\n", id);
+	//printf("User #%d has disconnected\n", id);
 	for (auto& cl : clients) {
 		if (true == cl.second->is_connected)
 			send_remove_object_packet(cl.first, id);
@@ -527,7 +527,7 @@ void handle_connection(SOCKET clientSocket) {
 	new_player->y = rand_float(0, WORLD_HEIGHT);
 	clients.insert(make_pair(user_id, new_player));
 
-	printf("User #%d has connected\n", user_id);
+	//printf("User #%d has connected\n", user_id);
 
 	auto req_info = new RequestInfo;
 	req_info->type = EV_RECV;
