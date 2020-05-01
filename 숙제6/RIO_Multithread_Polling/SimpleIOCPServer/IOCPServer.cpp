@@ -29,6 +29,7 @@ constexpr int client_limit = 20000; // 예상 최대 client 수
 constexpr int thread_num = 8;
 constexpr int completion_queue_size = ((MAX_PENDING_RECV + MAX_PENDING_SEND) * client_limit) / thread_num;
 constexpr int send_buf_num = client_limit * 50;
+constexpr float SEND_BUF_RATE_ON_BUSY = 0.1f;
 
 float rand_float(float min, float max) {
 	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
@@ -54,6 +55,11 @@ struct RequestInfo {
 	int thread_id;
 };
 
+struct SendBufInfo {
+	std::atomic_uint64_t num_max_bufs;
+	std::atomic_uint64_t num_available_bufs;
+};
+
 struct EmptyID {
 	int id;
 	system_clock::time_point out_time;
@@ -63,6 +69,7 @@ RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
 PCHAR rio_buffer;
 RIO_BUFFERID rio_buf_id;
 Concurrency::concurrent_queue<RequestInfo*> available_send_reqs[thread_num];
+SendBufInfo send_buf_infos[thread_num];
 MPSCQueue<EmptyID> empty_ids;
 RIO_CQ rio_cq_list[thread_num];
 thread_local int thread_id;
@@ -138,6 +145,9 @@ RequestInfo* add_more_send_req() {
 
 		available_send_reqs[thread_id].push(req);
 	}
+
+	send_buf_infos[thread_id].num_max_bufs.fetch_add((send_buf_num / thread_num), std::memory_order_release);
+	send_buf_infos[thread_id].num_available_bufs.fetch_add((send_buf_num / thread_num), std::memory_order_release);
 	return req;
 }
 
@@ -153,6 +163,7 @@ void send_packet(int id, Init func)
 		cerr << "No more send buffer, need to allocate more" << endl;
 		req_info = add_more_send_req();
 	}
+	send_buf_infos[thread_id].num_available_bufs.fetch_sub(1, std::memory_order_acquire);
 
 	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + (req_info->rio_buf->Offset));
 	func(*packet);
@@ -172,11 +183,13 @@ void send_packet(int id, Init func)
 		case WSAECONNABORTED:
 		case WSAENOTSOCK:
 			available_send_reqs[thread_id].push(req_info);
+			send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			Disconnect(id);
 			break;
 		default:
 			error_display("RIOSend Error :", err_no);
 			available_send_reqs[thread_id].push(req_info);
+			send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 		}
 	}
 }
@@ -441,6 +454,7 @@ void do_worker(int t_id)
 				}
 				else if (EV_SEND == req_info->type) {
 					available_send_reqs[req_info->thread_id].push(req_info);
+					send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 				}
 				continue;
 			}  // 클라이언트가 closesocket을 했을 경우		
@@ -491,6 +505,7 @@ void do_worker(int t_id)
 			}
 			else if (EV_SEND == req_info->type) {
 				available_send_reqs[req_info->thread_id].push(req_info);
+				send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			}
 			else {
 				cout << "Unknown Event Type :" << req_info->type << endl;
@@ -527,6 +542,8 @@ void init_rio(SOCKET listen_sock) {
 			req_info->thread_id = i;
 			available_send_reqs[i].push(req_info);
 		}
+		send_buf_infos[i].num_max_bufs.store((send_buf_num / thread_num), std::memory_order_relaxed);
+		send_buf_infos[i].num_available_bufs.store((send_buf_num / thread_num), std::memory_order_relaxed);
 	}
 
 	for (auto i = 0; i < thread_num; ++i) {
@@ -610,6 +627,16 @@ void handle_connection(SOCKET clientSocket) {
 	}
 }
 
+bool check_if_server_busy() {
+	auto total_max_buf_num = 0;
+	auto total_available_buf_num = 0;
+	for (auto i = 0; i < thread_num; ++i) {
+		total_max_buf_num += send_buf_infos[i].num_max_bufs.load(std::memory_order_acquire);
+		total_available_buf_num += send_buf_infos[i].num_available_bufs.load(std::memory_order_acquire);
+	}
+	return (total_available_buf_num < (int)((float)total_max_buf_num * SEND_BUF_RATE_ON_BUSY));
+}
+
 int main()
 {
 	wcout.imbue(std::locale("korean"));
@@ -641,6 +668,10 @@ int main()
 	printf("Server has started\n");
 
 	while (true) {
+		if (check_if_server_busy()) {
+			std::this_thread::yield();
+			continue;
+		}
 		SOCKET clientSocket = accept(listenSocket, (struct sockaddr*) & clientAddr, &addrLen);
 		if (INVALID_SOCKET == clientSocket) {
 			int err_no = WSAGetLastError();
