@@ -5,6 +5,7 @@
 #include <climits>
 #include <vector>
 #include <algorithm>
+#include <stdexcept>
 
 struct ThreadEpoch {
 	std::atomic_ullong epoch{ ULLONG_MAX };
@@ -75,7 +76,11 @@ public:
 	std::optional<T> deq();
 	void enq(const T& val);
 	void enq(T&& val);
-	std::optional<T> peek() const;
+	bool is_empty() const {
+		return head->next.load(std::memory_order_relaxed) == nullptr;
+	}
+	const T& peek() const;
+	T& peek();
 };
 
 template<typename T>
@@ -151,7 +156,6 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 template<typename T>
 inline std::optional<T> MPSCQueue<T>::deq()
 {
-	start_op();
 	std::optional<T> retval;
 	QueueNode<T>* next_head = head->next.load(std::memory_order_relaxed);
 
@@ -162,7 +166,6 @@ inline std::optional<T> MPSCQueue<T>::deq()
 		retval = std::move(next_head->value);
 	}
 
-	end_op();
 	return retval;
 }
 
@@ -179,14 +182,18 @@ inline void MPSCQueue<T>::enq(T&& val)
 }
 
 template<typename T>
-inline std::optional<T> MPSCQueue<T>::peek() const
+inline const T& MPSCQueue<T>::peek() const
 {
-	start_op();
 	QueueNode<T>* old_next = head->next.load(std::memory_order_relaxed);
-	if (old_next == nullptr) {
-		return std::nullopt;
-	}
+	if (old_next == nullptr) throw std::runtime_error("the MPSCQueue has been empty");
 	return old_next->value;
-	end_op();
+}
+
+template<typename T>
+inline T& MPSCQueue<T>::peek()
+{
+	QueueNode<T>* old_next = head->next.load(std::memory_order_relaxed);
+	if (old_next == nullptr) throw std::runtime_error("the MPSCQueue has been empty");
+	return old_next->value;
 }
 

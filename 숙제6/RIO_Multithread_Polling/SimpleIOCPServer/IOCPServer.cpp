@@ -34,6 +34,10 @@ float rand_float(float min, float max) {
 	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
 }
 
+struct Zone {
+
+};
+
 struct SendInfo {
 	SendInfo() = default;
 	SendInfo(int id, unique_ptr<char[]>&& data) : id{ id }, data{ std::move(data) } {}
@@ -527,26 +531,29 @@ void init_rio(SOCKET listen_sock) {
 
 void handle_connection(SOCKET clientSocket) {
 	int user_id = -1;
-	std::optional<EmptyID> empty_id = empty_ids.peek();
-	if (empty_id && duration_cast<milliseconds>(empty_id->out_time.time_since_epoch()).count() > 2000) {
-		empty_ids.deq();
-		user_id = empty_id->id;
+	if (!empty_ids.is_empty()) {
+		const auto& empty_id = empty_ids.peek();
+		if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > 2000)
+			empty_ids.deq();
+		user_id = empty_id.id;
 	}
 	else if (client_limit <= new_user_id + 1) {
 		while (true) {
-			empty_id = empty_ids.peek();
-			if (!empty_id) {
+			if (empty_ids.is_empty()) {
 				fprintf(stderr, "Can't accept more clients\n");
 				std::this_thread::yield();
-			}
-			else if (duration_cast<milliseconds>(empty_id->out_time.time_since_epoch()).count() > 2000) {
-				empty_ids.deq();
-				user_id = empty_id->id;
-				break;
 			}
 			else {
-				fprintf(stderr, "Can't accept more clients\n");
-				std::this_thread::yield();
+				const auto& empty_id = empty_ids.peek();
+				if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > 2000) {
+					empty_ids.deq();
+					user_id = empty_id.id;
+					break;
+				}
+				else {
+					fprintf(stderr, "Can't accept more clients\n");
+					std::this_thread::yield();
+				}
 			}
 		}
 	}
