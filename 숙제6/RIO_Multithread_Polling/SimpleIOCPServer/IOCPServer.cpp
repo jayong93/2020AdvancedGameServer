@@ -114,46 +114,49 @@ bool is_near(int a, int b)
 
 void Disconnect(int);
 
-void send_packet(int id, void* buff)
-{
-	auto client = clients[id];
-	if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
+RequestInfo* add_more_send_req() {
+	constexpr int buffer_size = (send_buf_num / thread_num) * MAX_BUFFER;
+	auto buf = (PCHAR)VirtualAllocEx(GetCurrentProcess(), nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	auto buf_id = rio_ftable.RIORegisterBuffer(buf, buffer_size);
 
-	char* packet = reinterpret_cast<char*>(buff);
-	auto data_size = packet[0];
+	auto req = new RequestInfo;
+	req->thread_id = thread_id;
+	req->type = EV_SEND;
+	req->rio_buf = new RIO_BUF;
+	req->rio_buf->BufferId = buf_id;
+	req->rio_buf->Length = MAX_BUFFER;
+	req->rio_buf->Offset = 0;
 
-	RequestInfo* req_info;
-	bool is_success = available_send_reqs[thread_id].try_pop(req_info);
-	if (!is_success) {
-		cerr << "No more send buffer, need to allocate more" << endl;
-		constexpr int buffer_size = (send_buf_num / thread_num) * MAX_BUFFER;
-		auto buf = (PCHAR)VirtualAllocEx(GetCurrentProcess(), nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-		auto buf_id = rio_ftable.RIORegisterBuffer(buf, buffer_size);
-
+	for (auto i = 1; i < buffer_size / MAX_BUFFER; ++i) {
 		auto req = new RequestInfo;
 		req->thread_id = thread_id;
 		req->type = EV_SEND;
 		req->rio_buf = new RIO_BUF;
 		req->rio_buf->BufferId = buf_id;
 		req->rio_buf->Length = MAX_BUFFER;
-		req->rio_buf->Offset = 0;
-		req_info = req;
+		req->rio_buf->Offset = i * MAX_BUFFER;
 
-		for (auto i = 1; i < buffer_size / MAX_BUFFER; ++i) {
-			auto req = new RequestInfo;
-			req->thread_id = thread_id;
-			req->type = EV_SEND;
-			req->rio_buf = new RIO_BUF;
-			req->rio_buf->BufferId = buf_id;
-			req->rio_buf->Length = MAX_BUFFER;
-			req->rio_buf->Offset = i * MAX_BUFFER;
+		available_send_reqs[thread_id].push(req);
+	}
+	return req;
+}
 
-			available_send_reqs[thread_id].push(req);
-		}
+template<typename Packet, typename Init>
+void send_packet(int id, Init func)
+{
+	auto client = clients[id];
+	if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
+
+	RequestInfo* req_info;
+	bool is_success = available_send_reqs[thread_id].try_pop(req_info);
+	if (!is_success) {
+		cerr << "No more send buffer, need to allocate more" << endl;
+		req_info = add_more_send_req();
 	}
 
-	memcpy_s(rio_buffer + (req_info->rio_buf->Offset), MAX_BUFFER, packet, data_size);
-	req_info->rio_buf->Length = data_size;
+	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + (req_info->rio_buf->Offset));
+	func(*packet);
+	req_info->rio_buf->Length = sizeof(Packet);
 
 	int ret;
 	{
@@ -180,36 +183,36 @@ void send_packet(int id, void* buff)
 
 void send_login_ok_packet(int id)
 {
-	sc_packet_login_ok packet;
-	packet.id = id;
-	packet.size = sizeof(packet);
-	packet.type = SC_LOGIN_OK;
-	packet.x = clients[id]->x;
-	packet.y = clients[id]->y;
-	packet.hp = 100;
-	packet.level = 1;
-	packet.exp = 1;
-	send_packet(id, &packet);
+	send_packet<sc_packet_login_ok>(id, [id](sc_packet_login_ok& packet) {
+		packet.id = id;
+		packet.size = sizeof(packet);
+		packet.type = SC_LOGIN_OK;
+		packet.x = clients[id]->x;
+		packet.y = clients[id]->y;
+		packet.hp = 100;
+		packet.level = 1;
+		packet.exp = 1;
+		});
 }
 
 void send_login_fail(int id)
 {
-	sc_packet_login_fail packet;
-	packet.size = sizeof(packet);
-	packet.type = SC_LOGIN_FAIL;
-	send_packet(id, &packet);
+	send_packet<sc_packet_login_fail>(id, [id](sc_packet_login_fail& packet) {
+		packet.size = sizeof(packet);
+		packet.type = SC_LOGIN_FAIL;
+		});
 }
 
 void send_put_object_packet(int client, int new_id)
 {
-	sc_packet_put_object packet;
-	packet.id = new_id;
-	packet.size = sizeof(packet);
-	packet.type = SC_PUT_OBJECT;
-	packet.x = clients[new_id]->x;
-	packet.y = clients[new_id]->y;
-	packet.o_type = 1;
-	send_packet(client, &packet);
+	send_packet<sc_packet_put_object>(client, [client, new_id](sc_packet_put_object& packet) {
+		packet.id = new_id;
+		packet.size = sizeof(packet);
+		packet.type = SC_PUT_OBJECT;
+		packet.x = clients[new_id]->x;
+		packet.y = clients[new_id]->y;
+		packet.o_type = 1;
+		});
 
 	if (client == new_id) return;
 	lock_guard<mutex>lg{ clients[client]->near_lock };
@@ -218,18 +221,17 @@ void send_put_object_packet(int client, int new_id)
 
 void send_pos_packet(int client, int mover)
 {
-	sc_packet_pos packet;
-	packet.id = mover;
-	packet.size = sizeof(packet);
-	packet.type = SC_POS;
-	packet.x = clients[mover]->x;
-	packet.y = clients[mover]->y;
-	packet.move_time = clients[client]->move_time;
-
 	clients[client]->near_lock.lock();
 	if ((client == mover) || 0 != clients[client]->near_id.count(mover)) {
 		clients[client]->near_lock.unlock();
-		send_packet(client, &packet);
+		send_packet<sc_packet_pos>(client, [client, mover](sc_packet_pos& packet) {
+			packet.id = mover;
+			packet.size = sizeof(packet);
+			packet.type = SC_POS;
+			packet.x = clients[mover]->x;
+			packet.y = clients[mover]->y;
+			packet.move_time = clients[client]->move_time;
+			});
 	}
 	else {
 		clients[client]->near_lock.unlock();
@@ -239,11 +241,11 @@ void send_pos_packet(int client, int mover)
 
 void send_remove_object_packet(int client, int leaver)
 {
-	sc_packet_remove_object packet;
-	packet.id = leaver;
-	packet.size = sizeof(packet);
-	packet.type = SC_REMOVE_OBJECT;
-	send_packet(client, &packet);
+	send_packet<sc_packet_remove_object>(client, [client, leaver](sc_packet_remove_object& packet) {
+		packet.id = leaver;
+		packet.size = sizeof(packet);
+		packet.type = SC_REMOVE_OBJECT;
+		});
 
 	lock_guard<mutex>lg{ clients[client]->near_lock };
 	clients[client]->near_id.erase(leaver);
@@ -251,11 +253,12 @@ void send_remove_object_packet(int client, int leaver)
 
 void send_chat_packet(int client, int teller, char* mess)
 {
-	sc_packet_chat packet;
-	packet.id = teller;
-	packet.size = sizeof(packet);
-	packet.type = SC_CHAT;
-	send_packet(client, &packet);
+	send_packet<sc_packet_chat>(client, [client, teller, mess](sc_packet_chat& packet) {
+		packet.id = teller;
+		packet.size = sizeof(packet);
+		packet.type = SC_CHAT;
+		strcpy_s(packet.chat, mess);
+		});
 }
 
 bool is_near_id(int player, int other)
