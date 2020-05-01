@@ -71,11 +71,10 @@ struct SOCKETINFO
 {
 	OVERLAPPED completion_over;
 	char* recv_buf;
-	RIO_RQ	rio_rq;
+	unsigned prev_packet_size;
+	RIO_RQ rio_rq;
 	mutex rq_lock;
 
-	char	pre_net_buf[MAX_BUFFER];
-	int		prev_packet_size;
 	SOCKET	socket;
 	int		id;
 	char	name[MAX_STR_LEN];
@@ -448,30 +447,33 @@ void do_worker(int t_id)
 			if (EV_RECV == req_info->type) {
 				auto client = clients[client_id];
 				char* p = client->recv_buf;
-				int remain = result.BytesTransferred;
-				int packet_size;
-				int prev_packet_size = client->prev_packet_size;
+				unsigned remain = result.BytesTransferred;
+				unsigned packet_size;
+				unsigned prev_packet_size = client->prev_packet_size;
 				if (0 == prev_packet_size)
 					packet_size = 0;
-				else packet_size = client->pre_net_buf[0];
+				else packet_size = p[0];
+
+				char packet[MAX_BUFFER];
 				while (remain > 0) {
 					if (0 == packet_size) packet_size = p[0];
 					int required = packet_size - prev_packet_size;
 					if (required <= remain) {
-						memcpy(client->pre_net_buf + prev_packet_size, p, required);
-						ProcessPacket(client_id, client->pre_net_buf);
+						ProcessPacket(client_id, p);
 						remain -= required;
-						p += required;
+						p += packet_size;
 						prev_packet_size = 0;
 						packet_size = 0;
 					}
 					else {
-						memcpy(client->pre_net_buf + prev_packet_size, p, remain);
+						memmove(client->recv_buf, p, remain);
 						prev_packet_size += remain;
-						remain = 0;
+						break;
 					}
 				}
 				client->prev_packet_size = prev_packet_size;
+				req_info->rio_buf->Offset = client_id * MAX_BUFFER + prev_packet_size;
+				req_info->rio_buf->Length = MAX_BUFFER - prev_packet_size;
 
 				int ret;
 				{
