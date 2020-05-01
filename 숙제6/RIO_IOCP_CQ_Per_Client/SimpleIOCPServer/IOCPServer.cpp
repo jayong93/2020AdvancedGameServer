@@ -49,10 +49,16 @@ struct RequestInfo {
 	int thread_id;
 };
 
+struct EmptyID {
+	int id;
+	system_clock::time_point out_time;
+};
+
 RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
 PCHAR rio_buffer;
 RIO_BUFFERID rio_buf_id;
 MPSCQueue<RequestInfo*> empty_send_bufs[thread_num];
+MPSCQueue<EmptyID> empty_ids;
 thread_local int thread_id;
 
 struct SOCKETINFO
@@ -69,7 +75,7 @@ struct SOCKETINFO
 	int		id;
 	char	name[MAX_STR_LEN];
 
-	bool is_connected = false;
+	std::atomic_bool is_connected = false;
 	bool is_active;
 	short	x, y;
 	unsigned move_time;
@@ -81,7 +87,6 @@ std::array<SOCKETINFO*, client_limit> clients;
 HANDLE	g_iocp;
 
 int new_user_id = 0;
-std::atomic_int num_clients{ 0 };
 
 void init_send_bufs(RIO_BUFFERID buf_id) {
 	for (size_t i = 0; i < thread_num; i++)
@@ -116,7 +121,6 @@ void error_display(const char* msg, int err_no)
 		(LPTSTR)&lpMsgBuf, 0, NULL);
 	cout << msg;
 	wcout << L"¿¡·¯ " << lpMsgBuf << endl;
-	while (true);
 	LocalFree(lpMsgBuf);
 }
 
@@ -132,7 +136,7 @@ void Disconnect(int id);
 void send_packet(int id, void* buff)
 {
 	auto client = clients[id];
-	if (false == client->is_connected) { return; }
+	if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
 
 	char* packet = reinterpret_cast<char*>(buff);
 	auto data_size = packet[0];
@@ -186,6 +190,7 @@ void send_packet(int id, void* buff)
 			break;
 		default:
 			error_display("RIOSend Error :", err_no);
+			empty_send_bufs[thread_id].enq(*req_info);
 		}
 	}
 }
@@ -278,15 +283,17 @@ bool is_near_id(int player, int other)
 
 void Disconnect(int id)
 {
-	clients[id]->is_connected = false;
+	clients[id]->is_connected.store(false, std::memory_order_release);
 	closesocket(clients[id]->socket);
 	printf("User #%d has disconnected\n", id);
-	const auto n_clients = num_clients.load(std::memory_order_acquire);
-	for (auto i = 0; i < n_clients; ++i) {
+	for (auto i = 0; i < new_user_id; ++i) {
 		auto cl = clients[i];
-		if (true == cl->is_connected)
+		if (true == cl->is_connected.load(std::memory_order_acquire))
 			send_remove_object_packet(cl->id, id);
 	}
+
+	EmptyID empty_id{ id, system_clock::now() };
+	empty_ids.enq(empty_id);
 }
 
 void ProcessMove(int id, unsigned char dir)
@@ -317,12 +324,11 @@ void ProcessMove(int id, unsigned char dir)
 	clients[id]->y = y;
 
 	set <int> new_vl;
-	const auto n_clients = num_clients.load(std::memory_order_acquire);
-	for (auto i = 0; i < n_clients; ++i) {
+	for (auto i = 0; i < new_user_id; ++i) {
 		auto cl = clients[i];
 		int other = cl->id;
 		if (id == other) continue;
-		if (false == clients[other]->is_connected) continue;
+		if (false == clients[other]->is_connected.load(std::memory_order_acquire)) continue;
 		if (true == is_near(id, other)) new_vl.insert(other);
 	}
 
@@ -355,14 +361,13 @@ void ProcessLogin(int user_id, char* id_str)
 	//	}
 	//}
 	strcpy_s(clients[user_id]->name, id_str);
-	clients[user_id]->is_connected = true;
+	clients[user_id]->is_connected.store(true, std::memory_order_release);
 	send_login_ok_packet(user_id);
 
-	const auto n_clients = num_clients.load(std::memory_order_acquire);
-	for (auto i = 0; i < n_clients; ++i) {
+	for (auto i = 0; i < new_user_id; ++i) {
 		auto cl = clients[i];
 		int other_player = cl->id;
-		if (false == clients[other_player]->is_connected) continue;
+		if (false == clients[other_player]->is_connected.load(std::memory_order_acquire)) continue;
 		if (true == is_near(other_player, user_id)) {
 			send_put_object_packet(other_player, user_id);
 			if (other_player != user_id) {
@@ -379,8 +384,12 @@ void ProcessChat(int id, char* mess)
 	auto vl = clients[id]->near_id;
 	clients[id]->near_lock.unlock();
 
-	for (auto cl : vl)
-		send_chat_packet(cl, id, mess);
+	for (auto cl_id : vl) {
+		auto cl = clients[cl_id];
+		if (false == cl->is_connected.load(std::memory_order_acquire))
+			continue;
+		send_chat_packet(cl_id, id, mess);
+	}
 }
 
 void ProcessPacket(int id, void* buff)
@@ -411,8 +420,8 @@ void ProcessPacket(int id, void* buff)
 	case CS_TELEPORT:
 		ProcessMove(id, 99);
 		break;
-	default: cout << "Invalid Packet Type Error\n";
-		while (true);
+	default:
+		fprintf(stderr, "Invalid Packet Type Error\n");
 	}
 }
 
@@ -491,7 +500,7 @@ void do_worker(int t_id)
 				if (TRUE != ret) {
 					int err_no = WSAGetLastError();
 					if (WSA_IO_PENDING != err_no)
-						error_display("WSAReceive Error :", err_no);
+						error_display("RIOReceive Error :", err_no);
 				}
 			}
 			else if (EV_SEND == req_info->type) {
@@ -560,11 +569,38 @@ int main()
 			if (WSA_IO_PENDING != err_no)
 				error_display("Accept Error :", err_no);
 		}
-		int user_id = new_user_id++;
 
-		if (client_limit <= new_user_id) {
-			fprintf(stderr, "Can't accept more clients\n");
-			exit(-1);
+		int user_id = -1;
+		std::optional<EmptyID> empty_id = empty_ids.peek();
+		if (empty_id && duration_cast<milliseconds>(empty_id->out_time.time_since_epoch()).count() > 2000) {
+			empty_ids.deq();
+			user_id = empty_id->id;
+		}
+		else if (client_limit <= new_user_id + 1) {
+			while (true) {
+				empty_id = empty_ids.peek();
+				if (!empty_id) {
+					fprintf(stderr, "Can't accept more clients\n");
+					std::this_thread::yield();
+				}
+				else if (duration_cast<milliseconds>(empty_id->out_time.time_since_epoch()).count() > 2000) {
+					empty_ids.deq();
+					user_id = empty_id->id;
+					break;
+				}
+				else {
+					fprintf(stderr, "Can't accept more clients\n");
+					std::this_thread::yield();
+				}
+			}
+		}
+		else {
+			user_id = new_user_id;
+		}
+
+		if (user_id < 0) {
+			fprintf(stderr, "Something wrong with a new client id\n");
+			continue;
 		}
 
 		SOCKETINFO* new_player = new SOCKETINFO;
@@ -592,7 +628,7 @@ int main()
 		clients[user_id] = new_player;
 
 		//printf("User #%d has connected\n", user_id);
-		num_clients.fetch_add(1, std::memory_order_release);
+		if (user_id == new_user_id) new_user_id++;
 
 		auto req_info = new RequestInfo;
 		req_info->type = EV_RECV;

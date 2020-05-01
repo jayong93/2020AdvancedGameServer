@@ -63,8 +63,8 @@ private:
 		}
 	};
 
-	void start_op();
-	void end_op();
+	void start_op() const;
+	void end_op() const;
 	void retire(QueueNode<T>* node);
 	void empty();
 	void inner_enq(QueueNode<T>& node);
@@ -75,17 +75,18 @@ public:
 	std::optional<T> deq();
 	void enq(const T& val);
 	void enq(T&& val);
+	std::optional<T> peek() const;
 };
 
 template<typename T>
-inline void MPSCQueue<T>::start_op()
+inline void MPSCQueue<T>::start_op() const
 {
 	initialize_thread_epoch();
 	my_epoch.epoch.store(g_epoch.load(std::memory_order_relaxed), std::memory_order_relaxed);
 }
 
 template<typename T>
-inline void MPSCQueue<T>::end_op()
+inline void MPSCQueue<T>::end_op() const
 {
 	my_epoch.epoch.store(ULLONG_MAX, std::memory_order_relaxed);
 }
@@ -175,4 +176,16 @@ template<typename T>
 inline void MPSCQueue<T>::enq(T&& val)
 {
 	this->inner_enq(*new QueueNode<T>{ std::move(val) });
+}
+
+template<typename T>
+inline std::optional<T> MPSCQueue<T>::peek() const
+{
+	start_op();
+	QueueNode<T>* old_next = head->next.load(std::memory_order_relaxed);
+	if (old_next == nullptr) {
+		return std::nullopt;
+	}
+	return old_next->value;
+	end_op();
 }
