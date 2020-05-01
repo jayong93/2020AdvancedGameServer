@@ -47,7 +47,7 @@ struct sc_packet_pos {
 	char type;
 	int id;
 	short x, y;
-	int seq_no;
+	unsigned move_time;
 };
 
 struct sc_packet_put_object {
@@ -95,7 +95,7 @@ struct cs_packet_move {
 	char	size;
 	char	type;
 	char	direction;
-	int		seq_no;
+	unsigned	move_time;
 };
 
 struct cs_packet_attack {
