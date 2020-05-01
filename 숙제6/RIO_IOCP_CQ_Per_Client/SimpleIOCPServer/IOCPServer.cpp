@@ -22,8 +22,8 @@ using namespace std::chrono;
 
 #define MAX_BUFFER        1024
 constexpr auto VIEW_RANGE = 7;
-constexpr int MAX_PENDING_RECV = 100;
-constexpr int MAX_PENDING_SEND = 500;
+constexpr int MAX_PENDING_RECV = 10;
+constexpr int MAX_PENDING_SEND = 5000;
 constexpr int client_limit = 20000; // 예상 최대 client 수
 constexpr int completion_queue_size = (MAX_PENDING_RECV + MAX_PENDING_SEND);
 constexpr int send_buf_num = client_limit * 50;
@@ -185,7 +185,7 @@ void send_packet(int id, void* buff)
 			Disconnect(id);
 			break;
 		default:
-			error_display("WSASend Error :", err_no);
+			error_display("RIOSend Error :", err_no);
 		}
 	}
 }
@@ -446,11 +446,11 @@ void do_worker(int t_id)
 				if (EV_RECV == req_info->type) {
 					delete req_info->rio_buf;
 					delete req_info;
+					Disconnect(key);
 				}
 				else if (EV_SEND == req_info->type) {
 					empty_send_bufs[req_info->thread_id].enq(req_info);
 				}
-				Disconnect(key);
 				continue;
 			}  // 클라이언트가 closesocket을 했을 경우		
 			//OVER_EX* over_ex = reinterpret_cast<OVER_EX*> (p_over);
@@ -591,7 +591,8 @@ int main()
 		new_player->y = rand_float(0, WORLD_HEIGHT);
 		clients[user_id] = new_player;
 
-		printf("User #%d has connected\n", user_id);
+		//printf("User #%d has connected\n", user_id);
+		num_clients.fetch_add(1, std::memory_order_release);
 
 		auto req_info = new RequestInfo;
 		req_info->type = EV_RECV;
