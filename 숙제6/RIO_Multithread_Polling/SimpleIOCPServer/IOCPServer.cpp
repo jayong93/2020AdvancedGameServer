@@ -628,8 +628,8 @@ void handle_connection(SOCKET clientSocket) {
 }
 
 bool check_if_server_busy() {
-	auto total_max_buf_num = 0;
-	auto total_available_buf_num = 0;
+	uint64_t total_max_buf_num = 0;
+	uint64_t total_available_buf_num = 0;
 	for (auto i = 0; i < thread_num; ++i) {
 		total_max_buf_num += send_buf_infos[i].num_max_bufs.load(std::memory_order_acquire);
 		total_available_buf_num += send_buf_infos[i].num_available_bufs.load(std::memory_order_acquire);
