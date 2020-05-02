@@ -152,10 +152,12 @@ RequestInfo* add_more_send_req() {
 }
 
 template<typename Packet, typename Init>
-void send_packet(int id, Init func)
+void send_packet(int id, Init func, bool send_only_connected = true)
 {
 	auto client = clients[id];
-	if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
+	if (send_only_connected) {
+		if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
+	}
 
 	RequestInfo* req_info;
 	bool is_success = available_send_reqs[thread_id].try_pop(req_info);
@@ -205,7 +207,7 @@ void send_login_ok_packet(int id)
 		packet.hp = 100;
 		packet.level = 1;
 		packet.exp = 1;
-		});
+		}, false);
 }
 
 void send_login_fail(int id)
@@ -213,7 +215,7 @@ void send_login_fail(int id)
 	send_packet<sc_packet_login_fail>(id, [id](sc_packet_login_fail& packet) {
 		packet.size = sizeof(packet);
 		packet.type = SC_LOGIN_FAIL;
-		});
+		}, false);
 }
 
 void send_put_object_packet(int client, int new_id)
@@ -361,7 +363,6 @@ void ProcessLogin(int user_id, char* id_str)
 	//	}
 	//}
 	strcpy_s(clients[user_id]->name, id_str);
-	clients[user_id]->is_connected = true;
 	send_login_ok_packet(user_id);
 
 	for (auto i = 0; i < new_user_id; ++i) {
@@ -504,6 +505,9 @@ void do_worker(int t_id)
 				}
 			}
 			else if (EV_SEND == req_info->type) {
+				if ((rio_buffer + req_info->rio_buf->Offset)[1] == SC_LOGIN_OK) {
+					clients[client_id]->is_connected.store(true, std::memory_order_release);
+				}
 				available_send_reqs[req_info->thread_id].push(req_info);
 				send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			}
@@ -634,7 +638,7 @@ bool check_if_server_busy() {
 		total_max_buf_num += send_buf_infos[i].num_max_bufs.load(std::memory_order_acquire);
 		total_available_buf_num += send_buf_infos[i].num_available_bufs.load(std::memory_order_acquire);
 	}
-	return (total_available_buf_num < (int)((float)total_max_buf_num * SEND_BUF_RATE_ON_BUSY));
+	return (total_available_buf_num < (int)((float)total_max_buf_num* SEND_BUF_RATE_ON_BUSY));
 }
 
 int main()
