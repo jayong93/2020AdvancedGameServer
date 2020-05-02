@@ -435,8 +435,8 @@ void do_worker(int t_id)
 		auto num_result = rio_ftable.RIODequeueCompletion(rio_cq_list[thread_id], results, 100);
 
 		if (RIO_CORRUPT_CQ == num_result) {
-			error_display("RIODequeueCompletion error", WSAGetLastError());
-			exit(-1);
+			fprintf(stderr, "RIODequeueCompletion error\n");
+			continue;
 		}
 
 		for (unsigned long i = 0; i < num_result; ++i) {
