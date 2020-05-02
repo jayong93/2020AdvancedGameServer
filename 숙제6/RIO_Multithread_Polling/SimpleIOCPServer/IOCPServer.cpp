@@ -65,7 +65,7 @@ struct EmptyID {
 RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
 PCHAR rio_buffer;
 RIO_BUFFERID rio_buf_id;
-Concurrency::concurrent_queue<RequestInfo*> available_send_reqs[thread_num];
+MPSCQueue<RequestInfo*> available_send_reqs[thread_num];
 SendBufInfo send_buf_infos[thread_num];
 MPSCQueue<EmptyID> empty_ids;
 RIO_CQ rio_cq_list[thread_num];
@@ -140,7 +140,7 @@ RequestInfo* add_more_send_req() {
 		req->rio_buf->Length = MAX_BUFFER;
 		req->rio_buf->Offset = i * MAX_BUFFER;
 
-		available_send_reqs[thread_id].push(req);
+		available_send_reqs[thread_id].enq(req);
 	}
 
 	send_buf_infos[thread_id].num_max_bufs.fetch_add((send_buf_num / thread_num), std::memory_order_release);
@@ -156,22 +156,21 @@ void send_packet(int id, Init func, bool send_only_connected = true)
 		if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
 	}
 
-	RequestInfo* req_info;
-	bool is_success = available_send_reqs[thread_id].try_pop(req_info);
-	if (!is_success) {
+	std::optional<RequestInfo*> req_info = available_send_reqs[thread_id].deq();
+	if (!req_info) {
 		cerr << "No more send buffer, need to allocate more" << endl;
 		req_info = add_more_send_req();
 	}
 	send_buf_infos[thread_id].num_available_bufs.fetch_sub(1, std::memory_order_acquire);
 
-	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + (req_info->rio_buf->Offset));
+	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + ((*req_info)->rio_buf->Offset));
 	func(*packet);
-	req_info->rio_buf->Length = sizeof(Packet);
+	(*req_info)->rio_buf->Length = sizeof(Packet);
 
 	int ret;
 	{
 		lock_guard<mutex> lg{ client->rq_lock };
-		ret = rio_ftable.RIOSend(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
+		ret = rio_ftable.RIOSend(client->rio_rq, (*req_info)->rio_buf, 1, 0, (void*)(*req_info));
 	}
 	if (TRUE != ret) {
 		int err_no = WSAGetLastError();
@@ -181,13 +180,13 @@ void send_packet(int id, Init func, bool send_only_connected = true)
 		case WSAECONNRESET:
 		case WSAECONNABORTED:
 		case WSAENOTSOCK:
-			available_send_reqs[thread_id].push(req_info);
+			available_send_reqs[thread_id].enq(*req_info);
 			send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			Disconnect(id);
 			break;
 		default:
 			error_display("RIOSend Error :", err_no);
-			available_send_reqs[thread_id].push(req_info);
+			available_send_reqs[thread_id].enq(*req_info);
 			send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 		}
 	}
@@ -451,7 +450,7 @@ void do_worker(int t_id)
 					Disconnect(client_id);
 				}
 				else if (EV_SEND == req_info->type) {
-					available_send_reqs[req_info->thread_id].push(req_info);
+					available_send_reqs[req_info->thread_id].enq(req_info);
 					send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 				}
 				continue;
@@ -505,7 +504,7 @@ void do_worker(int t_id)
 				if ((rio_buffer + req_info->rio_buf->Offset)[1] == SC_LOGIN_OK) {
 					clients[client_id]->is_connected.store(true, std::memory_order_release);
 				}
-				available_send_reqs[req_info->thread_id].push(req_info);
+				available_send_reqs[req_info->thread_id].enq(req_info);
 				send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			}
 			else {
@@ -541,7 +540,7 @@ void init_rio(SOCKET listen_sock) {
 			req_info->type = EV_SEND;
 			req_info->rio_buf = buf;
 			req_info->thread_id = i;
-			available_send_reqs[i].push(req_info);
+			available_send_reqs[i].enq(req_info);
 		}
 		send_buf_infos[i].num_max_bufs.store((send_buf_num / thread_num), std::memory_order_relaxed);
 		send_buf_infos[i].num_available_bufs.store((send_buf_num / thread_num), std::memory_order_relaxed);
