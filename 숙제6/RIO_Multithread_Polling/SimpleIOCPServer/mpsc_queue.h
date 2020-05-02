@@ -37,6 +37,8 @@ struct QueueNode {
 	QueueNode<T>() = default;
 	QueueNode<T>(const T& val) : value{ val } {}
 	QueueNode<T>(T&& val) : value{ std::move(val) } {}
+	template <typename... Param>
+	QueueNode<T>(Param... args) : value{ args } {}
 
 	T value;
 	std::atomic<QueueNode<T>*> next = nullptr;
@@ -76,6 +78,8 @@ public:
 	std::optional<T> deq();
 	void enq(const T& val);
 	void enq(T&& val);
+	template<typename... Param>
+	void emplace(Param... args);
 	bool is_empty() const {
 		return head->next.load(std::memory_order_relaxed) == nullptr;
 	}
@@ -197,3 +201,9 @@ inline T& MPSCQueue<T>::peek()
 	return old_next->value;
 }
 
+template<typename T>
+template<typename ...Param>
+inline void MPSCQueue<T>::emplace(Param ...args)
+{
+	this->inner_enq(*new QueueNode<T>{ args });
+}
