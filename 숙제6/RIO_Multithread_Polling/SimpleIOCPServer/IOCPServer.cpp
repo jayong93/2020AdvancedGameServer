@@ -12,6 +12,7 @@
 #include <atomic>
 #include <array>
 #include "mpsc_queue.h"
+#include "zone.h"
 
 using std::set, std::mutex, std::cout, std::cerr, std::wcout, std::endl, std::lock_guard, std::vector, std::make_pair, std::thread, std::unique_ptr, std::make_unique;
 using namespace std::chrono;
@@ -22,7 +23,7 @@ using namespace std::chrono;
 #include "protocol.h"
 
 #define MAX_BUFFER        1024
-constexpr auto VIEW_RANGE = 7;
+constexpr int VIEW_RANGE = 7;
 constexpr int MAX_PENDING_RECV = 10;
 constexpr int MAX_PENDING_SEND = 5000;
 constexpr int client_limit = 20000; // 예상 최대 client 수
@@ -34,10 +35,6 @@ constexpr float SEND_BUF_RATE_ON_BUSY = 0.1f;
 float rand_float(float min, float max) {
 	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
 }
-
-struct Zone {
-
-};
 
 struct SendInfo {
 	SendInfo() = default;
