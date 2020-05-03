@@ -29,7 +29,7 @@ EXTERN MPSCQueue<EmptyID> empty_ids;
 struct Zone;
 namespace player_msg {
 	struct PlayerListResponse {
-		std::vector<int> near_players;
+		std::vector<int>* near_players;
 		uint64_t stamp;
 	};
 	struct PlayerMoved {
@@ -45,7 +45,7 @@ namespace player_msg {
 }
 
 struct NearListInfo {
-	std::vector<std::vector<int>> ids;
+	std::vector<std::vector<int>*> ids;
 };
 
 struct Player

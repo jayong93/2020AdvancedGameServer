@@ -16,19 +16,22 @@ void Player::do_rountine()
 		std::visit(overloaded{
 			[this](player_msg::PlayerListResponse& m) {
 				auto& request = this->pending_near_request[m.stamp];
+				printf("%p", m.near_players);
 				request.ids.emplace_back(std::move(m.near_players));
 				if (request.ids.size() >= this->curr_zone->near_zones.size()) {
 					this->update_near_list(request);
 				}
 			},
 			[this](player_msg::PlayerLeaved& m) {
-				if (this->near_id.count(m.player_id) > 0) {
-					this->near_id.erase(m.player_id);
+				auto it = this->near_id.find(m.player_id);
+				if (it != this->near_id.end()) {
+					this->near_id.erase(it);
 					send_remove_object_packet(this->id, m.player_id);
 				}
 			},
 			[this](player_msg::PlayerMoved& m) {
-				if (this->near_id.count(m.player_id) > 0) {
+				auto it = this->near_id.find(m.player_id);
+				if (it != this->near_id.end()) {
 					send_pos_packet(this->id, m.player_id, m.x, m.y);
 				}
 				else {
@@ -54,15 +57,17 @@ void Player::update_near_list(NearListInfo& near_info)
 {
 	std::set<int> new_near;
 	for (auto& id_vec : near_info.ids) {
-		for (int id : id_vec) {
+		for (int id : *id_vec) {
 			new_near.emplace(id);
 		}
+		delete id_vec;
 	}
 
 	std::set<int>& old_near = this->near_id;
 
 	for (int new_id : new_near) {
-		if (old_near.count(new_id) == 0) {
+		auto it = old_near.find(new_id);
+		if (it == old_near.end()) {
 			// 내가 처음 위치를 전송 받았으면
 			if (new_id == this->id) {
 				this->is_connected = true;
@@ -75,7 +80,8 @@ void Player::update_near_list(NearListInfo& near_info)
 	}
 
 	for (int old_id : old_near) {
-		if (new_near.count(old_id) == 0) {
+		auto it = new_near.find(old_id);
+		if (it == new_near.end()) {
 			send_remove_object_packet(this->id, old_id);
 		}
 	}

@@ -61,11 +61,11 @@ Bound Zone::get_bound() const
 
 void Zone::send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list) const
 {
-	vector<int> near_players;
+	vector<int>* near_players = new vector<int>;
 	for (int id : this->clients) {
 		Player* player = client_list[id];
 		if (is_near(x, y, player->x, player->y)) {
-			near_players.emplace_back(id);
+			near_players->emplace_back(id);
 		}
 	}
 	player_msg::PlayerListResponse response;

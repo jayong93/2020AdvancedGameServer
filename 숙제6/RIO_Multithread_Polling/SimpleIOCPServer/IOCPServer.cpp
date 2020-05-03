@@ -148,9 +148,11 @@ void do_worker(int t_id)
 		for (auto i = ZONE_PER_THREAD_NUM * thread_id; i < min(ZONE_PER_THREAD_NUM * (thread_id + 1), zones.size()); ++i) {
 			Zone& zone = zones[i];
 			zone.do_routine(clients);
-			for (int client_id : zone.clients) {
-				Player& client = *clients[client_id];
-				client.do_rountine();
+		}
+		for (auto i = 0; i < new_user_id; ++i) {
+			auto client = clients[i];
+			if (i % thread_num == thread_id) {
+				client->do_rountine();
 			}
 		}
 
@@ -191,7 +193,6 @@ void do_worker(int t_id)
 					packet_size = 0;
 				else packet_size = p[0];
 
-				char packet[MAX_BUFFER];
 				while (remain > 0) {
 					if (0 == packet_size) packet_size = p[0];
 					int required = packet_size - prev_packet_size;
@@ -227,8 +228,10 @@ void do_worker(int t_id)
 			}
 		}
 
-		auto pending_sends = send_queues[thread_id].deq_all();
-		for (auto send : pending_sends) {
+		auto old_size = send_queues[thread_id].size();
+		for (auto i = 0; i < old_size; ++i) {
+			auto send_opt = send_queues[thread_id].deq();
+			auto& send = *send_opt;
 			auto ret = rio_ftable.RIOSend(clients[send.id]->rio_rq, send.send_buf->rio_buf, 1, 0, (void*)send.send_buf);
 			if (TRUE != ret) {
 				int err_no = WSAGetLastError();

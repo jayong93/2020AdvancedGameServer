@@ -62,16 +62,16 @@ private:
 			return retired_list;
 		}
 	};
+	std::atomic_uint64_t num_node;
 
 	void start_op() const;
 	void end_op() const;
 	void retire(QueueNode<T>* node);
-	void retire_all(QueueNode<T>* from, QueueNode<T>* to);
 	void empty();
 	void inner_enq(QueueNode<T>& node);
 
 public:
-	MPSCQueue<T>() : head{ new QueueNode<T> }, tail{ head } {}
+	MPSCQueue<T>() : head{ new QueueNode<T> }, tail{ head }, num_node{ 0 } {}
 	~MPSCQueue<T>() {
 		if (head != nullptr) {
 			while (head != tail) {
@@ -81,13 +81,13 @@ public:
 			}
 		}
 	}
-	MPSCQueue<T>(MPSCQueue<T>&& other) : head{ other.head }, tail{ other.tail.load(std::memory_order_relaxed) } {
+	MPSCQueue<T>(MPSCQueue<T>&& other) : head{ other.head }, tail{ other.tail.load(std::memory_order_relaxed) }, num_node{ other.num_node.load(std::memory_order_relaxed) } {
 		other.head = nullptr;
 		other.tail.store(nullptr, std::memory_order_relaxed);
+		other.num_node.store(0, std::memory_order_relaxed);
 	}
 
 	std::optional<T> deq();
-	std::vector<T> deq_all();
 	void enq(const T& val);
 	void enq(T&& val);
 	template<typename... Param>
@@ -97,6 +97,7 @@ public:
 	}
 	const T& peek() const;
 	T& peek();
+	uint64_t size() const { return num_node.load(std::memory_order_relaxed); }
 };
 
 template<typename T>
@@ -117,21 +118,6 @@ inline void MPSCQueue<T>::retire(QueueNode<T>* node)
 {
 	RetiredList::get().emplace_back(node, g_epoch.load(std::memory_order_relaxed));
 	counter++;
-	if (counter % epoch_increase_rate == 0) { g_epoch.fetch_add(1, std::memory_order_relaxed); }
-	if (counter % empty_rate == 0) {
-		this->empty();
-	}
-}
-
-template<typename T>
-inline void MPSCQueue<T>::retire_all(QueueNode<T>* from, QueueNode<T>* until)
-{
-	auto epoch = g_epoch.load(std::memory_order_relaxed);
-	while (from != until) {
-		RetiredList::get().emplace_back(from, epoch);
-		counter++;
-		from = from->next.load(std::memory_order_relaxed);
-	}
 	if (counter % epoch_increase_rate == 0) { g_epoch.fetch_add(1, std::memory_order_relaxed); }
 	if (counter % empty_rate == 0) {
 		this->empty();
@@ -181,12 +167,14 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 			break;
 		}
 	}
+	num_node.fetch_add(1, std::memory_order_relaxed);
 	end_op();
 }
 
 template<typename T>
 inline std::optional<T> MPSCQueue<T>::deq()
 {
+	start_op();
 	std::optional<T> retval;
 	QueueNode<T>* next_head = head->next.load(std::memory_order_relaxed);
 
@@ -194,31 +182,12 @@ inline std::optional<T> MPSCQueue<T>::deq()
 		auto old_head = head;
 		head = next_head;
 		retire(old_head);
-		retval = std::move(next_head->value);
+		retval.emplace(std::move(next_head->value));
+		num_node.fetch_sub(1, std::memory_order_relaxed);
 	}
 
+	end_op();
 	return retval;
-}
-
-template<typename T>
-inline std::vector<T> MPSCQueue<T>::deq_all()
-{
-	std::vector<T> return_vec;
-	QueueNode<T>* old_tail = tail.load(std::memory_order_relaxed);
-	auto old_head = head;
-
-	if (head == old_tail) {
-		return return_vec;
-	}
-
-	while (head != old_tail) {
-		auto next_head = head->next.load(std::memory_order_relaxed);
-		return_vec.emplace_back(std::move(next_head->value));
-		head = next_head;
-	}
-
-	retire_all(old_head, old_tail);
-	return return_vec;
 }
 
 template<typename T>
