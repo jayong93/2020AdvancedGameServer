@@ -3,7 +3,6 @@
 #include "protocol.h"
 
 // thread 1개가 여러 zone을 담당하긴 하지만, 한 thread에 묶여있는 zone은 sequential하게 처리되므로 send_queue도 thread 개수 만큼만 있으면 된다
-MPSCQueue<RequestInfo*> send_queues[thread_num];
 
 void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 {
@@ -81,8 +80,7 @@ void init_zones()
 		for (auto x = 0; x < ZONE_MAX_X; ++x) {
 			int center_x = x * ZONE_SIZE + ZONE_SIZE / 2;
 			int center_y = y * ZONE_SIZE + ZONE_SIZE / 2;
-			int send_queue_idx = (y * ZONE_MAX_X + x) / ZONE_PER_THREAD_NUM;
-			zones.emplace_back(center_x, center_y, send_queues[send_queue_idx]);
+			zones.emplace_back(center_x, center_y);
 		}
 	}
 }

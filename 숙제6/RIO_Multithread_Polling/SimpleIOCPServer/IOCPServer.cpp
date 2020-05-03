@@ -216,8 +216,7 @@ void do_worker(int t_id)
 				send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			}
 			else {
-				cout << "Unknown Event Type :" << req_info->type << endl;
-				while (true);
+				cerr << "Unknown Event Type :" << req_info->type << endl;
 			}
 		}
 	}
@@ -306,7 +305,6 @@ void handle_connection(SOCKET clientSocket) {
 	short y = rand_float(0, WORLD_HEIGHT);
 	Player* new_player = new Player{ user_id, clientSocket, x, y, recv_buf, rq, get_current_zone(x, y) };
 
-	// TODO: Zone의 cq에 들어가도록 수정
 	clients[user_id] = new_player;
 
 	if (user_id == new_user_id) new_user_id++;

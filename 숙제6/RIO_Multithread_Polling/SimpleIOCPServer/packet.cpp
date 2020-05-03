@@ -59,8 +59,8 @@ void release_send_buf(RequestInfo& buf)
 	send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 }
 
-void send_to_queue(Player* player, RequestInfo& req_info) {
-	player->curr_zone->send_queue.emplace(&req_info);
+void send_to_queue(RequestInfo& req_info) {
+	send_queues[req_info.thread_id].emplace(&req_info);
 }
 
 void send_login_ok_packet(int id)

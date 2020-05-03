@@ -28,6 +28,7 @@ struct SendBufInfo {
 EXTERN RIO_CQ rio_cq_list[thread_num];
 EXTERN MPSCQueue<RequestInfo*> available_send_reqs[thread_num];
 EXTERN SendBufInfo send_buf_infos[thread_num];
+EXTERN MPSCQueue<RequestInfo*> send_queues[thread_num];
 extern PCHAR rio_buffer;
 
 #undef EXTERN
@@ -35,7 +36,7 @@ extern PCHAR rio_buffer;
 RequestInfo& acquire_send_buf();
 void release_send_buf(RequestInfo& buf);
 void Disconnect(int id);
-void send_to_queue(Player* player, RequestInfo& req_info);
+void send_to_queue(RequestInfo& req_info);
 
 template<typename Packet, typename Init>
 void send_packet(int id, std::array<Player*, client_limit>& clients, Init func, bool send_only_connected = true)
@@ -51,7 +52,7 @@ void send_packet(int id, std::array<Player*, client_limit>& clients, Init func, 
 	func(*packet);
 	req_info.rio_buf->Length = sizeof(Packet);
 
-	send_to_queue(client, req_info);
+	send_to_queue(req_info);
 		//ret = rio_ftable.RIOSend(client->rio_rq, (*req_info)->rio_buf, 1, 0, (void*)(*req_info));
 }
 
