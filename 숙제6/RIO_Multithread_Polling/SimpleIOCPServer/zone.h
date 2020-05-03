@@ -63,7 +63,7 @@ struct Zone {
 	int center_x, center_y;
 	set<int> clients;
 	MPSCQueue<zone_msg::ZoneMsg> msg_queue;
-	vector<Zone*> near_zones;
+	vector<int> near_zones;
 
 	Zone(int x, int y) : center_x{ x }, center_y{ y } {}
 

@@ -16,7 +16,6 @@ void Player::do_rountine()
 		std::visit(overloaded{
 			[this](player_msg::PlayerListResponse& m) {
 				auto& request = this->pending_near_request[m.stamp];
-				printf("%p", m.near_players);
 				request.ids.emplace_back(std::move(m.near_players));
 				if (request.ids.size() >= this->curr_zone->near_zones.size()) {
 					this->update_near_list(request);
@@ -57,10 +56,9 @@ void Player::update_near_list(NearListInfo& near_info)
 {
 	std::set<int> new_near;
 	for (auto& id_vec : near_info.ids) {
-		for (int id : *id_vec) {
+		for (int id : id_vec) {
 			new_near.emplace(id);
 		}
-		delete id_vec;
 	}
 
 	std::set<int>& old_near = this->near_id;
