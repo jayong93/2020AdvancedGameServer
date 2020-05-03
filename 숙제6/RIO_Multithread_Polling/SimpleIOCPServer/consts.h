@@ -10,6 +10,8 @@ constexpr float SEND_BUF_RATE_ON_BUSY = 0.1f;
 constexpr unsigned MAX_PLAYER_ROUTINE_LOOP_TIME = 10;
 constexpr unsigned MAX_ZONE_ROUTINE_LOOP_TIME = 50;
 
-template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+template<class... Ts> struct overloaded : Ts... {
+    using Ts::operator()...;
+};
 template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 

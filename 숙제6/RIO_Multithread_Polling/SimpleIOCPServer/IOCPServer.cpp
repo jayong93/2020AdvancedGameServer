@@ -60,38 +60,6 @@ void error_display(const char* msg, int err_no)
 	LocalFree(lpMsgBuf);
 }
 
-void Disconnect(int);
-
-RequestInfo* add_more_send_req() {
-	constexpr int buffer_size = (send_buf_num / thread_num) * MAX_BUFFER;
-	auto buf = (PCHAR)VirtualAllocEx(GetCurrentProcess(), nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-	auto buf_id = rio_ftable.RIORegisterBuffer(buf, buffer_size);
-
-	auto req = new RequestInfo;
-	req->thread_id = thread_id;
-	req->type = EV_SEND;
-	req->rio_buf = new RIO_BUF;
-	req->rio_buf->BufferId = buf_id;
-	req->rio_buf->Length = MAX_BUFFER;
-	req->rio_buf->Offset = 0;
-
-	for (auto i = 1; i < buffer_size / MAX_BUFFER; ++i) {
-		auto req = new RequestInfo;
-		req->thread_id = thread_id;
-		req->type = EV_SEND;
-		req->rio_buf = new RIO_BUF;
-		req->rio_buf->BufferId = buf_id;
-		req->rio_buf->Length = MAX_BUFFER;
-		req->rio_buf->Offset = i * MAX_BUFFER;
-
-		available_send_reqs[thread_id].enq(req);
-	}
-
-	send_buf_infos[thread_id].num_max_bufs.fetch_add((send_buf_num / thread_num), std::memory_order_release);
-	send_buf_infos[thread_id].num_available_bufs.fetch_add((send_buf_num / thread_num), std::memory_order_release);
-	return req;
-}
-
 void Disconnect(int id)
 {
 	clients[id]->msg_queue.emplace(player_msg::Logout{});
@@ -126,14 +94,12 @@ void ProcessMove(int id, unsigned char dir)
 void ProcessLogin(int user_id, char* id_str)
 {
 	Player* client = clients[user_id];
-	int x = rand_float(0, WORLD_WIDTH);
-	int y = rand_float(0, WORLD_HEIGHT);
 	strcpy_s(client->name, id_str);
 	send_login_ok_packet(user_id);
 
 	Zone* my_zone = client->curr_zone;
 	auto stamp = client->stamp++;
-	my_zone->msg_queue.emplace(zone_msg::PlayerIn{ user_id, stamp, x, y });
+	my_zone->msg_queue.emplace(zone_msg::PlayerIn{ user_id, stamp, client->x, client->y });
 }
 
 void ProcessChat(int id, char* mess)
@@ -331,17 +297,16 @@ void handle_connection(SOCKET clientSocket) {
 	}
 
 
-	Player* new_player = new Player;
-	new_player->id = user_id;
-	new_player->socket = clientSocket;
-	new_player->prev_packet_size = 0;
-	new_player->recv_buf = rio_buffer + (user_id * MAX_BUFFER);
-
-	// TODO: Zone의 cq에 들어가도록 수정
-	new_player->rio_rq = rio_ftable.RIOCreateRequestQueue(clientSocket, MAX_PENDING_RECV, 1, MAX_PENDING_SEND, 1, rio_cq_list[user_id % thread_num], rio_cq_list[user_id % thread_num], (void*)user_id);
-	if (new_player->rio_rq == RIO_INVALID_RQ) {
+	auto rq = rio_ftable.RIOCreateRequestQueue(clientSocket, MAX_PENDING_RECV, 1, MAX_PENDING_SEND, 1, rio_cq_list[user_id % thread_num], rio_cq_list[user_id % thread_num], (void*)user_id);
+	if (rq == RIO_INVALID_RQ) {
 		error_display("RIOCreateRequestQueue Error :", WSAGetLastError());
 	}
+	auto recv_buf = rio_buffer + (user_id * MAX_BUFFER);
+	short x = rand_float(0, WORLD_WIDTH);
+	short y = rand_float(0, WORLD_HEIGHT);
+	Player* new_player = new Player{ user_id, clientSocket, x, y, recv_buf, rq, get_current_zone(x, y) };
+
+	// TODO: Zone의 cq에 들어가도록 수정
 	clients[user_id] = new_player;
 
 	if (user_id == new_user_id) new_user_id++;

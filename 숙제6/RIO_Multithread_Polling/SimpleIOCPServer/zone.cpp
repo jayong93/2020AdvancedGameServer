@@ -2,12 +2,8 @@
 #include "zone.h"
 #include "protocol.h"
 
-constexpr int32_t ceil_constexpr(float num)
-{
-    return (static_cast<float>(static_cast<int32_t>(num)) == num)
-        ? static_cast<int32_t>(num)
-        : static_cast<int32_t>(num) + ((num > 0) ? 1 : 0);
-}
+// thread 1개가 여러 zone을 담당하긴 하지만, 한 thread에 묶여있는 zone은 sequential하게 처리되므로 send_queue도 thread 개수 만큼만 있으면 된다
+MPSCQueue<RequestInfo*> send_queues[thread_num];
 
 void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 {
@@ -79,6 +75,18 @@ void Zone::send_near_players(Player* p, int x, int y, uint64_t stamp, std::array
 	p->msg_queue.emplace(std::move(response));
 }
 
+void init_zones()
+{
+	for (auto y = 0; y < ZONE_MAX_Y; ++y) {
+		for (auto x = 0; x < ZONE_MAX_X; ++x) {
+			int center_x = x * ZONE_SIZE + ZONE_SIZE / 2;
+			int center_y = y * ZONE_SIZE + ZONE_SIZE / 2;
+			int send_queue_idx = (y * ZONE_MAX_X + x) / ZONE_PER_THREAD_NUM;
+			zones.emplace_back(center_x, center_y, send_queues[send_queue_idx]);
+		}
+	}
+}
+
 bool is_near(int a_x, int a_y, int b_x, int b_y)
 {
 	if (VIEW_RANGE < abs(a_x - b_x)) return false;
@@ -88,10 +96,7 @@ bool is_near(int a_x, int a_y, int b_x, int b_y)
 
 Zone* get_current_zone(int x, int y)
 {
-	constexpr auto zone_size = VIEW_RANGE * 2 + 1;
-	constexpr auto zone_max_x = ceil_constexpr((float)WORLD_WIDTH / (float)VIEW_RANGE);
-	constexpr auto zone_max_y = ceil_constexpr((float)WORLD_HEIGHT / (float)VIEW_RANGE);
-	const auto zone_x = x / zone_size;
-	const auto zone_y = y / zone_size;
-	return &zones[zone_y * zone_max_x + zone_x];
+	const auto zone_x = x / ZONE_SIZE;
+	const auto zone_y = y / ZONE_SIZE;
+	return &zones[zone_y * ZONE_MAX_X + zone_x];
 }

@@ -7,10 +7,22 @@
 #include "consts.h"
 #include "mpsc_queue.h"
 #include "packet.h"
+#include "protocol.h"
 
 using std::vector, std::variant, std::set, std::optional;
 
+constexpr int32_t ceil_constexpr(float num)
+{
+    return (static_cast<float>(static_cast<int32_t>(num)) == num)
+        ? static_cast<int32_t>(num)
+        : static_cast<int32_t>(num) + ((num > 0) ? 1 : 0);
+}
+
 constexpr int VIEW_RANGE = 7;
+constexpr auto ZONE_SIZE = VIEW_RANGE * 2 + 1;
+constexpr auto ZONE_MAX_X = ceil_constexpr((float)WORLD_WIDTH / (float)VIEW_RANGE);
+constexpr auto ZONE_MAX_Y = ceil_constexpr((float)WORLD_HEIGHT / (float)VIEW_RANGE);
+constexpr unsigned ZONE_PER_THREAD_NUM = ceil_constexpr((float)(ZONE_MAX_X * ZONE_MAX_Y) / (float)thread_num);
 
 namespace zone_msg {
 	struct SendPlayerList {
@@ -55,6 +67,8 @@ struct Zone {
 	vector<Zone*> near_zones;
 
 	Zone(int x, int y, MPSCQueue<RequestInfo*>& send_queue) : center_x{ x }, center_y{ y }, send_queue{ send_queue } {}
+	Zone(const Zone&) = delete;
+	Zone(Zone&& other) : center_x{ other.center_x }, center_y{ other.center_y }, msg_queue{ std::move(other.msg_queue) }, send_queue{ other.send_queue }, near_zones{std::move(other.near_zones)} {}
 
 	void do_routine(std::array<Player*, client_limit>& client_list);
 	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list) const;
@@ -62,10 +76,14 @@ struct Zone {
 };
 
 #ifdef ZONE_IMPL
-std::vector<Zone> zones;
+#define EXTERN
 #else
-extern std::vector<Zone> zones;
+#define EXTERN extern
 #endif
+EXTERN std::vector<Zone> zones;
+#undef EXTERN
+
+void init_zones();
 
 bool is_near(int a_x, int a_y, int b_x, int b_y);
 Zone* get_current_zone(int x, int y);

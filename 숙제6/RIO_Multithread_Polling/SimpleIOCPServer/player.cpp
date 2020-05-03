@@ -29,7 +29,6 @@ void Player::do_rountine()
 			},
 			[this](player_msg::PlayerMoved& m) {
 				if (this->near_id.count(m.player_id) > 0) {
-					// TODO: x, y 좌표를 전달해서 보내도록 수정해야 함.
 					send_pos_packet(this->id, m.player_id, m.x, m.y);
 				}
 				else {
