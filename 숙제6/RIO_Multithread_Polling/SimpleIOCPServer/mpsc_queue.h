@@ -85,6 +85,7 @@ public:
 	}
 	MPSCQueue<T>(MPSCQueue<T>&& other) : head{ other.head }, tail{ other.tail.load(std::memory_order_relaxed) } {
 		other.head = nullptr;
+		other.tail.store(nullptr, std::memory_order_relaxed);
 	}
 
 	std::optional<T> deq();

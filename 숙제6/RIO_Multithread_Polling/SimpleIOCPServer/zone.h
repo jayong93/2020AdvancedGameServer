@@ -67,8 +67,6 @@ struct Zone {
 	vector<Zone*> near_zones;
 
 	Zone(int x, int y, MPSCQueue<RequestInfo*>& send_queue) : center_x{ x }, center_y{ y }, send_queue{ send_queue } {}
-	Zone(const Zone&) = delete;
-	Zone(Zone&& other) : center_x{ other.center_x }, center_y{ other.center_y }, msg_queue{ std::move(other.msg_queue) }, send_queue{ other.send_queue }, near_zones{std::move(other.near_zones)} {}
 
 	void do_routine(std::array<Player*, client_limit>& client_list);
 	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list) const;
