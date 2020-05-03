@@ -12,7 +12,10 @@
 #include <atomic>
 #include <array>
 #include "mpsc_queue.h"
+#include "player.h"
+#include "packet.h"
 #include "zone.h"
+#include "consts.h"
 
 using std::set, std::mutex, std::cout, std::cerr, std::wcout, std::endl, std::lock_guard, std::vector, std::make_pair, std::thread, std::unique_ptr, std::make_unique;
 using namespace std::chrono;
@@ -21,16 +24,6 @@ using namespace std::chrono;
 #pragma comment(lib, "Ws2_32.lib")
 
 #include "protocol.h"
-
-#define MAX_BUFFER        1024
-constexpr int VIEW_RANGE = 7;
-constexpr int MAX_PENDING_RECV = 10;
-constexpr int MAX_PENDING_SEND = 5000;
-constexpr int client_limit = 20000; // 예상 최대 client 수
-constexpr int thread_num = 8;
-constexpr int completion_queue_size = ((MAX_PENDING_RECV + MAX_PENDING_SEND) * client_limit) / thread_num;
-constexpr int send_buf_num = client_limit * 50;
-constexpr float SEND_BUF_RATE_ON_BUSY = 0.1f;
 
 float rand_float(float min, float max) {
 	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
@@ -44,54 +37,12 @@ struct SendInfo {
 	unique_ptr<char[]> data;
 };
 
-enum EVENT_TYPE { EV_RECV, EV_SEND, EV_MOVE, EV_PLAYER_MOVE_NOTIFY, EV_MOVE_TARGET, EV_ATTACK, EV_HEAL };
-
-struct RequestInfo {
-	EVENT_TYPE type;
-	RIO_BUF* rio_buf;
-	int thread_id;
-};
-
-struct SendBufInfo {
-	std::atomic_uint64_t num_max_bufs;
-	std::atomic_uint64_t num_available_bufs;
-};
-
-struct EmptyID {
-	int id;
-	system_clock::time_point out_time;
-};
-
 RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
 PCHAR rio_buffer;
 RIO_BUFFERID rio_buf_id;
-MPSCQueue<RequestInfo*> available_send_reqs[thread_num];
-SendBufInfo send_buf_infos[thread_num];
-MPSCQueue<EmptyID> empty_ids;
-RIO_CQ rio_cq_list[thread_num];
 thread_local int thread_id;
 
-struct SOCKETINFO
-{
-	OVERLAPPED completion_over;
-	char* recv_buf;
-	unsigned prev_packet_size;
-	RIO_RQ rio_rq;
-	mutex rq_lock;
-
-	SOCKET	socket;
-	int		id;
-	char	name[MAX_STR_LEN];
-
-	std::atomic_bool is_connected = false;
-	bool is_active;
-	short	x, y;
-	unsigned move_time;
-	set <int> near_id;
-	mutex near_lock;
-};
-
-std::array<SOCKETINFO*, client_limit> clients;
+std::array<Player*, client_limit> clients;
 
 int new_user_id = 0;
 
@@ -107,13 +58,6 @@ void error_display(const char* msg, int err_no)
 	cout << msg;
 	wcout << L"에러 " << lpMsgBuf << endl;
 	LocalFree(lpMsgBuf);
-}
-
-bool is_near(int a, int b)
-{
-	if (VIEW_RANGE < abs(clients[a]->x - clients[b]->x)) return false;
-	if (VIEW_RANGE < abs(clients[a]->y - clients[b]->y)) return false;
-	return true;
 }
 
 void Disconnect(int);
@@ -148,158 +92,15 @@ RequestInfo* add_more_send_req() {
 	return req;
 }
 
-template<typename Packet, typename Init>
-void send_packet(int id, Init func, bool send_only_connected = true)
-{
-	auto client = clients[id];
-	if (send_only_connected) {
-		if (false == client->is_connected.load(std::memory_order_acquire)) { return; }
-	}
-
-	std::optional<RequestInfo*> req_info = available_send_reqs[thread_id].deq();
-	if (!req_info) {
-		cerr << "No more send buffer, need to allocate more" << endl;
-		req_info = add_more_send_req();
-	}
-	send_buf_infos[thread_id].num_available_bufs.fetch_sub(1, std::memory_order_acquire);
-
-	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + ((*req_info)->rio_buf->Offset));
-	func(*packet);
-	(*req_info)->rio_buf->Length = sizeof(Packet);
-
-	int ret;
-	{
-		lock_guard<mutex> lg{ client->rq_lock };
-		ret = rio_ftable.RIOSend(client->rio_rq, (*req_info)->rio_buf, 1, 0, (void*)(*req_info));
-	}
-	if (TRUE != ret) {
-		int err_no = WSAGetLastError();
-		switch (err_no) {
-		case WSA_IO_PENDING:
-			break;
-		case WSAECONNRESET:
-		case WSAECONNABORTED:
-		case WSAENOTSOCK:
-			available_send_reqs[thread_id].enq(*req_info);
-			send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
-			Disconnect(id);
-			break;
-		default:
-			error_display("RIOSend Error :", err_no);
-			available_send_reqs[thread_id].enq(*req_info);
-			send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
-		}
-	}
-}
-
-void send_login_ok_packet(int id)
-{
-	send_packet<sc_packet_login_ok>(id, [id](sc_packet_login_ok& packet) {
-		packet.id = id;
-		packet.size = sizeof(packet);
-		packet.type = SC_LOGIN_OK;
-		packet.x = clients[id]->x;
-		packet.y = clients[id]->y;
-		packet.hp = 100;
-		packet.level = 1;
-		packet.exp = 1;
-		}, false);
-}
-
-void send_login_fail(int id)
-{
-	send_packet<sc_packet_login_fail>(id, [id](sc_packet_login_fail& packet) {
-		packet.size = sizeof(packet);
-		packet.type = SC_LOGIN_FAIL;
-		}, false);
-}
-
-void send_put_object_packet(int client, int new_id)
-{
-	send_packet<sc_packet_put_object>(client, [client, new_id](sc_packet_put_object& packet) {
-		packet.id = new_id;
-		packet.size = sizeof(packet);
-		packet.type = SC_PUT_OBJECT;
-		packet.x = clients[new_id]->x;
-		packet.y = clients[new_id]->y;
-		packet.o_type = 1;
-		});
-
-	if (client == new_id) return;
-	lock_guard<mutex>lg{ clients[client]->near_lock };
-	clients[client]->near_id.insert(new_id);
-}
-
-void send_pos_packet(int client, int mover)
-{
-	clients[client]->near_lock.lock();
-	if ((client == mover) || 0 != clients[client]->near_id.count(mover)) {
-		clients[client]->near_lock.unlock();
-		send_packet<sc_packet_pos>(client, [client, mover](sc_packet_pos& packet) {
-			packet.id = mover;
-			packet.size = sizeof(packet);
-			packet.type = SC_POS;
-			packet.x = clients[mover]->x;
-			packet.y = clients[mover]->y;
-			packet.move_time = clients[client]->move_time;
-			});
-	}
-	else {
-		clients[client]->near_lock.unlock();
-		send_put_object_packet(client, mover);
-	}
-}
-
-void send_remove_object_packet(int client, int leaver)
-{
-	send_packet<sc_packet_remove_object>(client, [client, leaver](sc_packet_remove_object& packet) {
-		packet.id = leaver;
-		packet.size = sizeof(packet);
-		packet.type = SC_REMOVE_OBJECT;
-		});
-
-	lock_guard<mutex>lg{ clients[client]->near_lock };
-	clients[client]->near_id.erase(leaver);
-}
-
-void send_chat_packet(int client, int teller, char* mess)
-{
-	send_packet<sc_packet_chat>(client, [client, teller, mess](sc_packet_chat& packet) {
-		packet.id = teller;
-		packet.size = sizeof(packet);
-		packet.type = SC_CHAT;
-		strcpy_s(packet.chat, mess);
-		});
-}
-
-bool is_near_id(int player, int other)
-{
-	lock_guard <mutex> gl{ clients[player]->near_lock };
-	return (0 != clients[player]->near_id.count(other));
-}
-
 void Disconnect(int id)
 {
-	clients[id]->is_connected.store(false, std::memory_order_release);
-	closesocket(clients[id]->socket);
-	printf("User #%d has disconnected\n", id);
-	for (auto i = 0; i < new_user_id; ++i) {
-		auto cl = clients[i];
-		if (true == cl->is_connected.load(std::memory_order_acquire))
-			send_remove_object_packet(cl->id, id);
-	}
-
-	EmptyID empty_id{ id, system_clock::now() };
-	empty_ids.enq(empty_id);
+	clients[id]->msg_queue.emplace(player_msg::Logout{});
 }
 
 void ProcessMove(int id, unsigned char dir)
 {
 	short x = clients[id]->x;
 	short y = clients[id]->y;
-	clients[id]->near_lock.lock();
-	auto old_vl = clients[id]->near_id;
-	clients[id]->near_lock.unlock();
 	switch (dir) {
 	case D_UP: if (y > 0) y--;
 		break;
@@ -310,85 +111,33 @@ void ProcessMove(int id, unsigned char dir)
 	case D_RIGHT: if (x < WORLD_WIDTH - 1) x++;
 		break;
 	case 99:
-		x = rand() % WORLD_WIDTH;
-		y = rand() % WORLD_HEIGHT;
+		x = (short)rand_float(0, WORLD_WIDTH);
+		y = (short)rand_float(0, WORLD_HEIGHT);
 		break;
-	default: cout << "Invalid Direction Error\n";
-		while (true);
+	default:
+		cerr << "Invalid Direction Error\n";
+		return;
 	}
 
-	clients[id]->x = x;
-	clients[id]->y = y;
-
-	set <int> new_vl;
-	for (auto i = 0; i < new_user_id; ++i) {
-		auto cl = clients[i];
-		int other = cl->id;
-		if (id == other) continue;
-		if (false == clients[other]->is_connected.load(std::memory_order_acquire)) continue;
-		if (true == is_near(id, other)) new_vl.insert(other);
-	}
-
-
-	send_pos_packet(id, id);
-	for (auto cl : old_vl) {
-		if (0 != new_vl.count(cl)) {
-			send_pos_packet(cl, id);
-		}
-		else
-		{
-			send_remove_object_packet(id, cl);
-			send_remove_object_packet(cl, id);
-		}
-	}
-	for (auto cl : new_vl) {
-		if (0 == old_vl.count(cl)) {
-			send_put_object_packet(id, cl);
-			send_put_object_packet(cl, id);
-		}
-	}
+	auto stamp = clients[id]->stamp++;
+	clients[id]->curr_zone->msg_queue.emplace(zone_msg::PlayerMove{ id, stamp, x, y });
 }
 
 void ProcessLogin(int user_id, char* id_str)
 {
-	//for (auto cl : clients) {
-	//	if (0 == strcmp(cl.second->name, id_str)) {
-	//		send_login_fail(user_id);
-	//		Disconnect(user_id);
-	//		return;
-	//	}
-	//}
-	strcpy_s(clients[user_id]->name, id_str);
+	Player* client = clients[user_id];
+	int x = rand_float(0, WORLD_WIDTH);
+	int y = rand_float(0, WORLD_HEIGHT);
+	strcpy_s(client->name, id_str);
 	send_login_ok_packet(user_id);
 
-	for (auto i = 0; i < new_user_id; ++i) {
-		auto cl = clients[i];
-		int other_player = cl->id;
-		if (false == clients[other_player]->is_connected.load(std::memory_order_acquire)) continue;
-		if (true == is_near(other_player, user_id)) {
-			send_put_object_packet(other_player, user_id);
-			if (other_player != user_id) {
-				send_put_object_packet(user_id, other_player);
-			}
-		}
-	}
-
+	Zone* my_zone = client->curr_zone;
+	auto stamp = client->stamp++;
+	my_zone->msg_queue.emplace(zone_msg::PlayerIn{ user_id, stamp, x, y });
 }
 
 void ProcessChat(int id, char* mess)
 {
-
-	clients[id]->near_lock.lock();
-	auto vl = clients[id]->near_id;
-	clients[id]->near_lock.unlock();
-
-	for (auto cl_id : vl) {
-		auto cl = clients[cl_id];
-		if (false == cl->is_connected.load(std::memory_order_acquire))
-			continue;
-		send_chat_packet(cl_id, id, mess);
-	}
-
 }
 
 void ProcessPacket(int id, void* buff)
@@ -489,11 +238,7 @@ void do_worker(int t_id)
 				req_info->rio_buf->Offset = client_id * MAX_BUFFER + prev_packet_size;
 				req_info->rio_buf->Length = MAX_BUFFER - prev_packet_size;
 
-				int ret;
-				{
-					lock_guard<mutex> lg{ client->rq_lock };
-					ret = rio_ftable.RIOReceive(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-				}
+				int ret = rio_ftable.RIOReceive(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
 				if (TRUE != ret) {
 					int err_no = WSAGetLastError();
 					if (WSA_IO_PENDING != err_no)
@@ -501,9 +246,6 @@ void do_worker(int t_id)
 				}
 			}
 			else if (EV_SEND == req_info->type) {
-				if ((rio_buffer + req_info->rio_buf->Offset)[1] == SC_LOGIN_OK) {
-					clients[client_id]->is_connected.store(true, std::memory_order_release);
-				}
 				available_send_reqs[req_info->thread_id].enq(req_info);
 				send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 			}
@@ -589,19 +331,17 @@ void handle_connection(SOCKET clientSocket) {
 	}
 
 
-	SOCKETINFO* new_player = new SOCKETINFO;
+	Player* new_player = new Player;
 	new_player->id = user_id;
 	new_player->socket = clientSocket;
 	new_player->prev_packet_size = 0;
 	new_player->recv_buf = rio_buffer + (user_id * MAX_BUFFER);
 
-	ZeroMemory(&new_player->completion_over, sizeof(OVERLAPPED));
+	// TODO: Zone의 cq에 들어가도록 수정
 	new_player->rio_rq = rio_ftable.RIOCreateRequestQueue(clientSocket, MAX_PENDING_RECV, 1, MAX_PENDING_SEND, 1, rio_cq_list[user_id % thread_num], rio_cq_list[user_id % thread_num], (void*)user_id);
 	if (new_player->rio_rq == RIO_INVALID_RQ) {
 		error_display("RIOCreateRequestQueue Error :", WSAGetLastError());
 	}
-	new_player->x = rand_float(0, WORLD_WIDTH);
-	new_player->y = rand_float(0, WORLD_HEIGHT);
 	clients[user_id] = new_player;
 
 	if (user_id == new_user_id) new_user_id++;
@@ -615,11 +355,7 @@ void handle_connection(SOCKET clientSocket) {
 	req_info->rio_buf->Length = MAX_BUFFER;
 	req_info->rio_buf->Offset = user_id * MAX_BUFFER;
 
-	int ret;
-	{
-		lock_guard<mutex> lg{ new_player->rq_lock };
-		ret = rio_ftable.RIOReceive(new_player->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-	}
+	int ret = rio_ftable.RIOReceive(new_player->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
 	if (TRUE != ret) {
 		int err_no = WSAGetLastError();
 		if (WSA_IO_PENDING != err_no)

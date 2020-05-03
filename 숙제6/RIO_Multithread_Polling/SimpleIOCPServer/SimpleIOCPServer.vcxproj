@@ -144,9 +144,15 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="IOCPServer.cpp" />
+    <ClCompile Include="packet.cpp" />
+    <ClCompile Include="player.cpp" />
+    <ClCompile Include="zone.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="consts.h" />
     <ClInclude Include="mpsc_queue.h" />
+    <ClInclude Include="packet.h" />
+    <ClInclude Include="player.h" />
     <ClInclude Include="protocol.h" />
     <ClInclude Include="zone.h" />
   </ItemGroup>

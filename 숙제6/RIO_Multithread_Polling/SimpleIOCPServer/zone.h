@@ -6,26 +6,33 @@
 #include "player.h"
 #include "consts.h"
 #include "mpsc_queue.h"
+#include "packet.h"
 
 using std::vector, std::variant, std::set, std::optional;
-
-template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
-template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 constexpr int VIEW_RANGE = 7;
 
 namespace zone_msg {
 	struct SendPlayerList {
 		int player_id;
+		uint64_t stamp;
+		int x, y;
 	};
 	struct PlayerIn {
 		int player_id;
+		uint64_t stamp;
+		int x, y;
 	};
 	struct PlayerMove {
 		int player_id;
+		uint64_t stamp;
+		int x, y;
+	};
+	struct PlayerLeave {
+		int player_id;
 	};
 
-	using ZoneMsg = variant<SendPlayerList, PlayerIn, PlayerMove>;
+	using ZoneMsg = variant<SendPlayerList, PlayerIn, PlayerMove, PlayerLeave>;
 }
 
 struct Bound {
@@ -44,10 +51,13 @@ struct Zone {
 	int center_x, center_y;
 	set<int> clients;
 	MPSCQueue<zone_msg::ZoneMsg> msg_queue;
+	MPSCQueue<RequestInfo*>& send_queue;
 	vector<Zone*> near_zones;
 
+	Zone(int x, int y, MPSCQueue<RequestInfo*>& send_queue) : center_x{ x }, center_y{ y }, send_queue{ send_queue } {}
+
 	void do_routine(std::array<Player*, client_limit>& client_list);
-	void send_near_players(Player* p, std::array<Player*, client_limit>& client_list) const;
+	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list) const;
 	Bound get_bound() const;
 };
 

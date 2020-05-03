@@ -74,6 +74,13 @@ private:
 
 public:
 	MPSCQueue<T>() : head{ new QueueNode<T> }, tail{ head } {}
+	~MPSCQueue<T>() {
+		while (head != tail) {
+			auto old_head = head;
+			head = head->next.load(std::memory_order_relaxed);
+			delete old_head;
+		}
+	}
 
 	std::optional<T> deq();
 	void enq(const T& val);
