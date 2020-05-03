@@ -40,8 +40,6 @@ struct QueueNode {
 	T value;
 	std::atomic<QueueNode<T>*> next = nullptr;
 };
-template <class... Param>
-QueueNode(Param&&...)->QueueNode<std::remove_reference_t<Param>...>;
 
 template <typename T>
 struct RetiredNode {
