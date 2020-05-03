@@ -145,6 +145,15 @@ void do_worker(int t_id)
 
 	while (true)
 	{
+		for (auto i = ZONE_PER_THREAD_NUM * thread_id; i < min(ZONE_PER_THREAD_NUM * (thread_id + 1), zones.size()); ++i) {
+			Zone& zone = zones[i];
+			zone.do_routine(clients);
+			for (int client_id : zone.clients) {
+				Player& client = *clients[client_id];
+				client.do_rountine();
+			}
+		}
+
 		RIORESULT results[100];
 		auto num_result = rio_ftable.RIODequeueCompletion(rio_cq_list[thread_id], results, 100);
 
@@ -165,8 +174,7 @@ void do_worker(int t_id)
 					Disconnect(client_id);
 				}
 				else if (EV_SEND == req_info->type) {
-					available_send_reqs[req_info->thread_id].enq(req_info);
-					send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
+					release_send_buf(*req_info);
 				}
 				continue;
 			}  // 클라이언트가 closesocket을 했을 경우		
@@ -212,11 +220,31 @@ void do_worker(int t_id)
 				}
 			}
 			else if (EV_SEND == req_info->type) {
-				available_send_reqs[req_info->thread_id].enq(req_info);
-				send_buf_infos[req_info->thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
+				release_send_buf(*req_info);
 			}
 			else {
 				cerr << "Unknown Event Type :" << req_info->type << endl;
+			}
+		}
+
+		auto pending_sends = send_queues[thread_id].deq_all();
+		for (auto send : pending_sends) {
+			auto ret = rio_ftable.RIOSend(clients[send.id]->rio_rq, send.send_buf->rio_buf, 1, 0, (void*)send.send_buf);
+			if (TRUE != ret) {
+				int err_no = WSAGetLastError();
+				switch (err_no) {
+				case WSA_IO_PENDING:
+					break;
+				case WSAECONNRESET:
+				case WSAECONNABORTED:
+				case WSAENOTSOCK:
+					release_send_buf(*send.send_buf);
+					Disconnect(send.id);
+					break;
+				default:
+					error_display("RIOSend Error :", err_no);
+					release_send_buf(*send.send_buf);
+				}
 			}
 		}
 	}
@@ -354,6 +382,7 @@ int main()
 	listen(listenSocket, 5);
 
 	init_rio(listenSocket);
+	init_zones();
 
 	SOCKADDR_IN clientAddr;
 	int addrLen = sizeof(SOCKADDR_IN);

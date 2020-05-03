@@ -55,12 +55,12 @@ RequestInfo& acquire_send_buf()
 
 void release_send_buf(RequestInfo& buf)
 {
-	available_send_reqs[thread_id].enq(&buf);
-	send_buf_infos[thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
+	available_send_reqs[buf.thread_id].enq(&buf);
+	send_buf_infos[buf.thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 }
 
-void send_to_queue(RequestInfo& req_info) {
-	send_queues[req_info.thread_id].emplace(&req_info);
+void send_to_queue(int id, RequestInfo& req_info) {
+	send_queues[req_info.thread_id].emplace(id, &req_info);
 }
 
 void send_login_ok_packet(int id)
