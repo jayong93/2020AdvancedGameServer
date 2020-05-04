@@ -19,6 +19,7 @@ void Player::do_rountine()
 				request.ids.emplace_back(std::move(m.near_players));
 				if (request.ids.size() == m.total_list_num) {
 					this->update_near_list(request);
+					request.ids.clear();
 				}
 				else if (request.ids.size() > m.total_list_num) {
 					fprintf(stderr, "Near list response goes wrong");
