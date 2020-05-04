@@ -236,12 +236,6 @@ void do_worker(int t_id)
 				switch (err_no) {
 				case WSA_IO_PENDING:
 					break;
-				case WSAECONNRESET:
-				case WSAECONNABORTED:
-				case WSAENOTSOCK:
-					release_send_buf(*send.send_buf);
-					Disconnect(send.id);
-					break;
 				default:
 					error_display("RIOSend Error :", err_no);
 					release_send_buf(*send.send_buf);
