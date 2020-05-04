@@ -116,9 +116,8 @@ public:
 			}
 		}
 	}
-	MPSCQueue<T>(MPSCQueue<T>&& other) noexcept : head{ other.head }, tail{ other.tail.exchange(new QueueNode<T>) }, num_node{ other.num_node.exchange(0) } {
-		other.head = other.tail.load();
-	}
+	MPSCQueue<T>(const MPSCQueue<T>&) = delete;
+	MPSCQueue<T>(MPSCQueue<T>&&) = delete;
 
 	std::optional<T> deq();
 	std::vector<T> deq_all();
