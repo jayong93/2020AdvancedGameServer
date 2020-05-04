@@ -8,49 +8,6 @@
 #include <stdexcept>
 #include <concurrent_vector.h>
 
-//using Concurrency::concurrent_queue;
-//
-//template<class T>
-//struct MPSCQueue {
-//	concurrent_queue<T> queue;
-//	std::atomic_uint64_t num_entry = 0;
-//
-//	MPSCQueue() = default;
-//	MPSCQueue(const MPSCQueue&) = delete;
-//	MPSCQueue(MPSCQueue&& other) : queue{ std::move(other.queue) }, num_entry{ other.num_entry.exchange(0) } {}
-//
-//	void enq(const T& v) {
-//		queue.push(v);
-//		num_entry.fetch_add(1, std::memory_order_relaxed);
-//	}
-//	void enq(T&& v) {
-//		queue.push(std::move(v));
-//		num_entry.fetch_add(1, std::memory_order_relaxed);
-//	}
-//	template<class ...Arg>
-//	void emplace(Arg&&... arg) {
-//		queue.push(T{std::forward<Arg>(arg)...});
-//		num_entry.fetch_add(1, std::memory_order_relaxed);
-//	}
-//	std::optional<T> deq() {
-//		T val;
-//		if (!queue.try_pop(val)) {
-//			return std::nullopt;
-//		}
-//		num_entry.fetch_sub(1, std::memory_order_relaxed);
-//		return val;
-//	}
-//	uint64_t size() const {
-//		return num_entry.load(std::memory_order_relaxed);
-//	}
-//	bool is_empty() const {
-//		return queue.empty();
-//	}
-//	const T& peek() const {
-//		return *queue.unsafe_begin();
-//	}
-//};
-
 struct ThreadEpoch {
 	std::atomic_ullong epoch{ ULLONG_MAX };
 	std::atomic<ThreadEpoch*> next{ nullptr };
