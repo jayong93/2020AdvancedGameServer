@@ -31,6 +31,7 @@ namespace player_msg {
 	struct PlayerListResponse {
 		std::vector<int> near_players;
 		uint64_t stamp;
+		int total_list_num;
 	};
 	struct PlayerMoved {
 		int player_id;

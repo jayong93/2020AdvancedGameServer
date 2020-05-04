@@ -17,8 +17,11 @@ void Player::do_rountine()
 			[this](player_msg::PlayerListResponse& m) {
 				auto& request = this->pending_near_request[m.stamp];
 				request.ids.emplace_back(std::move(m.near_players));
-				if (request.ids.size() >= this->curr_zone->near_zones.size()) {
+				if (request.ids.size() == m.total_list_num) {
 					this->update_near_list(request);
+				}
+				else if (request.ids.size() > m.total_list_num) {
+					fprintf(stderr, "Near list response goes wrong");
 				}
 			},
 			[this](player_msg::PlayerLeaved& m) {
@@ -75,12 +78,19 @@ void Player::update_near_list(NearListInfo& near_info)
 		else {
 			send_pos_packet(this->id, new_id, clients[new_id]->x, clients[new_id]->y);
 		}
+		if (new_id != this->id) {
+			auto other = clients[new_id];
+			other->msg_queue.emplace(player_msg::PlayerMoved{ this->id, this->x, this->y });
+		}
 	}
 
 	for (int old_id : old_near) {
 		auto it = new_near.find(old_id);
 		if (it == new_near.end()) {
 			send_remove_object_packet(this->id, old_id);
+
+			auto other = clients[old_id];
+			other->msg_queue.emplace(player_msg::PlayerLeaved{ this->id });
 		}
 	}
 

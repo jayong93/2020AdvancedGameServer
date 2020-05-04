@@ -29,6 +29,7 @@ namespace zone_msg {
 		int player_id;
 		uint64_t stamp;
 		int x, y;
+		int total_list_num;
 	};
 	struct PlayerIn {
 		int player_id;
@@ -68,7 +69,7 @@ struct Zone {
 	Zone(int x, int y) : center_x{ x }, center_y{ y } {}
 
 	void do_routine(std::array<Player*, client_limit>& client_list);
-	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list) const;
+	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list, int total_list_num) const;
 	Bound get_bound() const;
 };
 
@@ -84,3 +85,4 @@ void init_zones();
 
 bool is_near(int a_x, int a_y, int b_x, int b_y);
 Zone* get_current_zone(int x, int y);
+vector<Zone*> get_near_zones(int x, int y);

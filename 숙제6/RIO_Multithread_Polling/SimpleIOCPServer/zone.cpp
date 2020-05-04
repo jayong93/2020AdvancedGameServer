@@ -12,36 +12,41 @@ void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 		std::visit(overloaded{
 			[this, &client_list](zone_msg::SendPlayerList& m) {
 				Player* me = client_list[m.player_id];
-				send_near_players(me, m.x, m.y, m.stamp, client_list);
+				send_near_players(me, m.x, m.y, m.stamp, client_list, m.total_list_num);
 			},
 			[this, &client_list](zone_msg::PlayerIn& m) {
 				this->clients.emplace(m.player_id);
-				for (int near_zone_id : this->near_zones) {
-					auto& near_zone = zones[near_zone_id];
-					near_zone.msg_queue.emplace(zone_msg::SendPlayerList{ m.player_id, m.stamp, m.x, m.y });
-				}
 				Player* me = client_list[m.player_id];
-				me->curr_zone = this;
 				me->x = m.x;
 				me->y = m.y;
-				send_near_players(me, m.x, m.y, m.stamp, client_list);
+
+				auto near_zones = get_near_zones(m.x, m.y);
+				for (auto near_zone : near_zones) {
+					if (near_zone == this) continue;
+					near_zone->msg_queue.emplace(zone_msg::SendPlayerList{ m.player_id, m.stamp, m.x, m.y, (int)near_zones.size() });
+				}
+				me->curr_zone = this;
+				send_near_players(me, m.x, m.y, m.stamp, client_list, near_zones.size());
 			},
 			[this, &client_list](zone_msg::PlayerMove& m) {
 				auto bound = this->get_bound();
 				auto me = client_list[m.player_id];
+
 				if (!bound.is_in(m.x, m.y)) {
 					this->clients.erase(m.player_id);
 					auto new_zone = get_current_zone(m.x, m.y);
 					new_zone->msg_queue.emplace(zone_msg::PlayerIn{ m.player_id, m.stamp, m.x, m.y });
 				}
 				else {
-					for (int near_zone_id : this->near_zones) {
-						auto& near_zone = zones[near_zone_id];
-						near_zone.msg_queue.emplace(zone_msg::SendPlayerList{ m.player_id, m.stamp, m.x, m.y });
-					}
 					me->x = m.x;
 					me->y = m.y;
-					send_near_players(me, m.x, m.y, m.stamp, client_list);
+
+					auto near_zones = get_near_zones(m.x, m.y);
+					for (auto near_zone : near_zones) {
+						if (near_zone == this) continue;
+						near_zone->msg_queue.emplace(zone_msg::SendPlayerList{ m.player_id, m.stamp, m.x, m.y, (int)near_zones.size() });
+					}
+					send_near_players(me, m.x, m.y, m.stamp, client_list, near_zones.size());
 				}
 			},
 			[this](zone_msg::PlayerLeave& m) {
@@ -61,7 +66,7 @@ Bound Zone::get_bound() const
 	return b;
 }
 
-void Zone::send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list) const
+void Zone::send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list, int total_list_num) const
 {
 	vector<int> near_players;
 	for (int id : this->clients) {
@@ -73,6 +78,7 @@ void Zone::send_near_players(Player* p, int x, int y, uint64_t stamp, std::array
 	player_msg::PlayerListResponse response;
 	response.near_players = std::move(near_players);
 	response.stamp = stamp;
+	response.total_list_num = total_list_num;
 	p->msg_queue.emplace(std::move(response));
 }
 
@@ -122,4 +128,43 @@ Zone* get_current_zone(int x, int y)
 	const auto zone_x = x / ZONE_SIZE;
 	const auto zone_y = y / ZONE_SIZE;
 	return &zones[zone_y * ZONE_MAX_X + zone_x];
+}
+
+vector<Zone*> get_near_zones(int x, int y)
+{
+	vector<Zone*> near_zones;
+	auto right = (int)floor((float)x / (float)ZONE_SIZE + 0.5f);
+	auto bottom = (int)floor((float)y / (float)ZONE_SIZE + 0.5f);
+
+	vector<int> xs;
+	vector<int> ys;
+	if (right == 0) {
+		xs.push_back(right);
+	}
+	else if (right == ZONE_MAX_X) {
+		xs.push_back(right - 1);
+	}
+	else {
+		xs.push_back(right);
+		xs.push_back(right - 1);
+	}
+
+	if (bottom == 0) {
+		ys.push_back(bottom);
+	}
+	else if (bottom == ZONE_MAX_Y) {
+		ys.push_back(bottom - 1);
+	}
+	else {
+		ys.push_back(bottom);
+		ys.push_back(bottom - 1);
+	}
+
+	for (auto _x : xs) {
+		for (auto _y : ys) {
+			near_zones.emplace_back(&zones[_y * ZONE_MAX_X + _x]);
+		}
+	}
+
+	return near_zones;
 }
