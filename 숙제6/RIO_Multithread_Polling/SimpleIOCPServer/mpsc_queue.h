@@ -154,8 +154,8 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 	start_op();
 	QueueNode<T>* old_tail;
 	while (true) {
-		old_tail = tail.load(std::memory_order_acquire);
-		auto old_next = old_tail->next.load(std::memory_order_acquire);
+		old_tail = tail.load(std::memory_order_relaxed);
+		auto old_next = old_tail->next.load(std::memory_order_relaxed);
 		if (old_next != nullptr) {
 			tail.compare_exchange_strong(old_tail, old_next);
 			continue;
@@ -166,7 +166,7 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 			break;
 		}
 	}
-	num_node.fetch_add(1, std::memory_order_relaxed);
+	num_node.fetch_add(1, std::memory_order_release);
 	end_op();
 }
 
@@ -228,7 +228,7 @@ inline void MPSCQueue<T>::enq(T&& val)
 template<typename T>
 inline const T& MPSCQueue<T>::peek() const
 {
-	QueueNode<T>* old_next = head->next.load();
+	QueueNode<T>* old_next = head->next.load(std::memory_order_relaxed);
 	if (old_next == nullptr) throw std::runtime_error("the MPSCQueue has been empty");
 	return old_next->value;
 }
@@ -236,7 +236,7 @@ inline const T& MPSCQueue<T>::peek() const
 template<typename T>
 inline T& MPSCQueue<T>::peek()
 {
-	QueueNode<T>* old_next = head->next.load();
+	QueueNode<T>* old_next = head->next.load(std::memory_order_relaxed);
 	if (old_next == nullptr) throw std::runtime_error("the MPSCQueue has been empty");
 	return old_next->value;
 }
