@@ -51,6 +51,7 @@ void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 			},
 			[this](zone_msg::PlayerLeave& m) {
 				this->clients.erase(m.player_id);
+				fprintf(stderr, "Player #%d has been disconnected\n", m.player_id);
 			},
 			}, *msg);
 	}

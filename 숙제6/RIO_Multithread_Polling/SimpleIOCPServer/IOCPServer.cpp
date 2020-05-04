@@ -228,10 +228,8 @@ void do_worker(int t_id)
 			}
 		}
 
-		auto old_size = send_queues[thread_id].size();
-		for (auto i = 0; i < old_size; ++i) {
-			auto send_opt = send_queues[thread_id].deq();
-			auto& send = *send_opt;
+		auto pending_sends = send_queues[thread_id].deq_all();
+		for (auto& send : pending_sends) {
 			auto ret = rio_ftable.RIOSend(clients[send.id]->rio_rq, send.send_buf->rio_buf, 1, 0, (void*)send.send_buf);
 			if (TRUE != ret) {
 				int err_no = WSAGetLastError();
