@@ -58,7 +58,6 @@ private:
 	void start_op() const;
 	void end_op() const;
 	void retire(QueueNode<T>* node);
-	void retire_all(QueueNode<T>* from, QueueNode<T>* to);
 	void empty();
 	void inner_enq(QueueNode<T>& node);
 
@@ -77,7 +76,6 @@ public:
 	MPSCQueue<T>(MPSCQueue<T>&&) = delete;
 
 	std::optional<T> deq();
-	std::vector<T> deq_all();
 	void enq(const T& val);
 	void enq(T&& val);
 	template<typename... Param>
@@ -108,21 +106,6 @@ inline void MPSCQueue<T>::retire(QueueNode<T>* node)
 {
 	retired_list.emplace_back(node, g_epoch.load(std::memory_order_acquire));
 	counter++;
-	if (counter % epoch_increase_rate == 0) { g_epoch.fetch_add(1, std::memory_order_release); }
-	if (counter % empty_rate == 0) {
-		this->empty();
-	}
-}
-
-template<typename T>
-inline void MPSCQueue<T>::retire_all(QueueNode<T>* from, QueueNode<T>* until)
-{
-	auto epoch = g_epoch.load(std::memory_order_acquire);
-	while (from != until) {
-		retired_list.emplace_back(from, epoch);
-		counter++;
-		from = from->next.load(std::memory_order_relaxed);
-	}
 	if (counter % epoch_increase_rate == 0) { g_epoch.fetch_add(1, std::memory_order_release); }
 	if (counter % empty_rate == 0) {
 		this->empty();
@@ -185,32 +168,6 @@ inline std::optional<T> MPSCQueue<T>::deq()
 	}
 
 	return retval;
-}
-
-template<typename T>
-inline std::vector<T> MPSCQueue<T>::deq_all()
-{
-	std::vector<T> return_vec;
-	QueueNode<T>* old_tail = tail.load(std::memory_order_relaxed);
-	auto old_head = head;
-
-	if (head == old_tail) {
-		return return_vec;
-	}
-
-	unsigned num_deleted = 0;
-
-	while (head != old_tail) {
-		auto next_head = head->next.load(std::memory_order_relaxed);
-		return_vec.emplace_back(std::move(next_head->value));
-		head = next_head;
-		num_deleted++;
-	}
-
-	num_node.fetch_sub(num_deleted, std::memory_order_release);
-
-	retire_all(old_head, old_tail);
-	return return_vec;
 }
 
 template<typename T>
