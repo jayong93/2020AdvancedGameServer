@@ -89,29 +89,29 @@ void init_zones()
 		for (auto x = 0; x < ZONE_MAX_X; ++x) {
 			int center_x = x * ZONE_SIZE + ZONE_SIZE / 2;
 			int center_y = y * ZONE_SIZE + ZONE_SIZE / 2;
-			zones.emplace_back(center_x, center_y);
+			zones.emplace_back(new Zone{ center_x, center_y });
 
-			auto& new_zone = zones.back();
+			auto new_zone = zones.back();
 			auto new_idx = y * ZONE_MAX_X + x;
 			bool not_left_edge = x > 0;
 			bool not_top_edge = y > 0;
 			if (not_left_edge) {
 				if (not_top_edge) {
 					auto other_idx = (y - 1) * ZONE_MAX_X + (x - 1);
-					auto& other = zones[other_idx];
-					new_zone.near_zones.emplace_back(other_idx);
-					other.near_zones.emplace_back(new_idx);
+					auto other = zones[other_idx];
+					new_zone->near_zones.emplace_back(other_idx);
+					other->near_zones.emplace_back(new_idx);
 				}
 				auto other_idx = y * ZONE_MAX_X + (x - 1);
-				auto& other = zones[other_idx];
-				new_zone.near_zones.emplace_back(other_idx);
-				other.near_zones.emplace_back(new_idx);
+				auto other = zones[other_idx];
+				new_zone->near_zones.emplace_back(other_idx);
+				other->near_zones.emplace_back(new_idx);
 			}
 			else if (not_top_edge) {
 				auto other_idx = (y - 1) * ZONE_MAX_X + x;
-				auto& other = zones[other_idx];
-				new_zone.near_zones.emplace_back(other_idx);
-				other.near_zones.emplace_back(new_idx);
+				auto other = zones[other_idx];
+				new_zone->near_zones.emplace_back(other_idx);
+				other->near_zones.emplace_back(new_idx);
 			}
 		}
 	}
@@ -128,7 +128,7 @@ Zone* get_current_zone(int x, int y)
 {
 	const auto zone_x = x / ZONE_SIZE;
 	const auto zone_y = y / ZONE_SIZE;
-	return &zones[zone_y * ZONE_MAX_X + zone_x];
+	return zones[zone_y * ZONE_MAX_X + zone_x];
 }
 
 vector<Zone*> get_near_zones(int x, int y)
@@ -163,7 +163,7 @@ vector<Zone*> get_near_zones(int x, int y)
 
 	for (auto _x : xs) {
 		for (auto _y : ys) {
-			near_zones.emplace_back(&zones[_y * ZONE_MAX_X + _x]);
+			near_zones.emplace_back(zones[_y * ZONE_MAX_X + _x]);
 		}
 	}
 

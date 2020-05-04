@@ -146,7 +146,7 @@ void do_worker(int t_id)
 	while (true)
 	{
 		for (auto i = ZONE_PER_THREAD_NUM * thread_id; i < min(ZONE_PER_THREAD_NUM * (thread_id + 1), zones.size()); ++i) {
-			Zone& zone = zones[i];
+			Zone& zone = *zones[i];
 			zone.do_routine(clients);
 		}
 		for (auto i = 0; i < new_user_id; ++i) {

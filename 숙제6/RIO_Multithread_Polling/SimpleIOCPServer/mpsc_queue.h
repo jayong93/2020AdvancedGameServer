@@ -116,10 +116,8 @@ public:
 			}
 		}
 	}
-	MPSCQueue<T>(MPSCQueue<T>&& other) noexcept : head{ other.head }, tail{ other.tail.load(std::memory_order_relaxed) }, num_node{ other.num_node.load(std::memory_order_relaxed) } {
-		other.head = nullptr;
-		other.tail.store(nullptr, std::memory_order_relaxed);
-		other.num_node.store(0, std::memory_order_relaxed);
+	MPSCQueue<T>(MPSCQueue<T>&& other) noexcept : head{ other.head }, tail{ other.tail.exchange(new QueueNode<T>) }, num_node{ other.num_node.exchange(0) } {
+		other.head = other.tail.load();
 	}
 
 	std::optional<T> deq();
@@ -200,8 +198,8 @@ inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)
 	start_op();
 	QueueNode<T>* old_tail;
 	while (true) {
-		old_tail = tail.load();
-		auto old_next = old_tail->next.load();
+		old_tail = tail.load(std::memory_order_acquire);
+		auto old_next = old_tail->next.load(std::memory_order_acquire);
 		if (old_next != nullptr) {
 			tail.compare_exchange_strong(old_tail, old_next);
 			continue;

@@ -67,6 +67,8 @@ struct Zone {
 	vector<int> near_zones;
 
 	Zone(int x, int y) : center_x{ x }, center_y{ y } {}
+	Zone(const Zone&) = delete;
+	Zone(Zone&&) = delete;
 
 	void do_routine(std::array<Player*, client_limit>& client_list);
 	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list, int total_list_num) const;
@@ -78,7 +80,7 @@ struct Zone {
 #else
 #define EXTERN extern
 #endif
-EXTERN std::vector<Zone> zones;
+EXTERN std::vector<Zone*> zones;
 #undef EXTERN
 
 void init_zones();

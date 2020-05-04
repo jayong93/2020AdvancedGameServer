@@ -74,5 +74,7 @@ struct Player
 	void update_near_list(NearListInfo&);
 
 	Player(int id, SOCKET socket, short x, short y, char* recv_buf, RIO_RQ rq, Zone* curr_zone) : id{ id }, socket{ socket }, x{ x }, y{ y }, recv_buf{ recv_buf }, rio_rq{ rq }, curr_zone{ curr_zone } {}
+	Player(const Player&) = delete;
+	Player(Player&&) = delete;
 };
 
