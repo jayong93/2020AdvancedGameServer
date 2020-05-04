@@ -40,7 +40,6 @@ extern PCHAR rio_buffer;
 
 RequestInfo& acquire_send_buf();
 void release_send_buf(RequestInfo& buf);
-void Disconnect(int id);
 void send_to_queue(int id, RequestInfo& req_info);
 
 template<typename Packet, typename Init>
