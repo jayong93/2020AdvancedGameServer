@@ -144,6 +144,7 @@ void ProcessPacket(int id, void* buff)
 void do_worker(int t_id)
 {
 	thread_id = t_id;
+	size_t pending_send_completion = 0;
 
 	while (true)
 	{
@@ -166,18 +167,21 @@ void do_worker(int t_id)
 				}
 			}
 
-			auto pending_sends = send_queues[thread_id].deq_all();
-			for (auto& send : pending_sends) {
+			const auto threshold = MAX_PENDING_SEND * max(new_user_id / thread_num, 1) * 0.9;
+
+			if (threshold - pending_send_completion < 0) continue;
+
+			for (auto i = 0; i < threshold - pending_send_completion; ++i) {
+				auto send_option = send_queues[thread_id].deq();
+				if (!send_option) break;
+
+				auto& send = *send_option;
 				auto ret = rio_ftable.RIOSend(clients[send.id]->rio_rq, send.send_buf->rio_buf, 1, 0, (void*)send.send_buf);
+				pending_send_completion++;
 				if (TRUE != ret) {
 					int err_no = WSAGetLastError();
 					switch (err_no) {
 					case WSA_IO_PENDING:
-						break;
-					case WSAECONNRESET:
-					case WSAECONNABORTED:
-					case WSAENOTSOCK:
-						release_send_buf(*send.send_buf);
 						break;
 					default:
 						error_display("RIOSend Error :", err_no);
@@ -185,6 +189,7 @@ void do_worker(int t_id)
 					}
 				}
 			}
+
 
 			PostQueuedCompletionStatus(g_iocp[thread_id], 0, 0, nullptr);
 		}
@@ -211,6 +216,7 @@ void do_worker(int t_id)
 						Disconnect(client_id);
 					}
 					else if (EV_SEND == req_info->type) {
+						pending_send_completion--;
 						release_send_buf(*req_info);
 					}
 					continue;
@@ -256,6 +262,7 @@ void do_worker(int t_id)
 					}
 				}
 				else if (EV_SEND == req_info->type) {
+					pending_send_completion--;
 					release_send_buf(*req_info);
 				}
 				else {
