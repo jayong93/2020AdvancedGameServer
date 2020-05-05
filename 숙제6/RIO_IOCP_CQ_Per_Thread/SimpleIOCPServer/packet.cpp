@@ -59,8 +59,8 @@ void release_send_buf(RequestInfo& buf)
 	send_buf_infos[buf.thread_id].num_available_bufs.fetch_add(1, std::memory_order_release);
 }
 
-void send_to_queue(int id, RequestInfo& req_info) {
-	send_queues[req_info.thread_id].emplace(id, &req_info);
+void send_to_queue(int id, RequestInfo& req_info, bool send_only_connected) {
+	send_queues[req_info.thread_id].emplace(id, &req_info, send_only_connected);
 }
 
 void send_login_ok_packet(int id)

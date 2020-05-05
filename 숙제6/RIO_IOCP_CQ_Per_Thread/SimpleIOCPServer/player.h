@@ -69,6 +69,7 @@ struct Player
 	Zone* curr_zone;
 	uint64_t stamp = 0;
 	std::map<uint64_t, NearListInfo> pending_near_request;
+	uint64_t pending_sends = 0;
 
 	void do_rountine();
 	void update_near_list(NearListInfo&);
