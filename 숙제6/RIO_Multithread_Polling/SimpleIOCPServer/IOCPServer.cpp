@@ -249,6 +249,7 @@ void do_worker(int t_id)
 				continue;
 			}
 			if (client->is_connected == false) {
+				release_send_buf(*send.send_buf);
 				continue;
 			}
 
