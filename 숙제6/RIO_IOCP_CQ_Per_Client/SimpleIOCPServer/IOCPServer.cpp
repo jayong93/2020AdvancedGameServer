@@ -38,40 +38,32 @@ void do_worker(int t_id)
 	while (true)
 	{
 		DWORD num_byte;
-		ULONG_PTR key_ptr;
+		ULONG_PTR key;
 		LPOVERLAPPED p_over;
 
-		GetQueuedCompletionStatus(g_iocp, &num_byte, &key_ptr, &p_over, INFINITE);
+		GetQueuedCompletionStatus(g_iocp, &num_byte, &key, &p_over, INFINITE);
 
 		// zone routine
-		if (key_ptr == MAXULONG_PTR) {
-			int zones_idx = (int)p_over;
-			for (auto i = ZONE_PER_THREAD_NUM * zones_idx; i < min(ZONE_PER_THREAD_NUM * (zones_idx + 1), zones.size()); ++i) {
-				zones[i]->do_routine(clients);
-			}
-			PostQueuedCompletionStatus(g_iocp, 0, MAXULONG_PTR, (LPOVERLAPPED)zones_idx);
+		if (key == MAXULONG_PTR) {
+			int zone_idx = (int)p_over;
+			zones[zone_idx]->do_routine(clients);
+			PostQueuedCompletionStatus(g_iocp, 0, MAXULONG_PTR, (LPOVERLAPPED)zone_idx);
 		}
 
 		else
 		{
-			int key = static_cast<int>(key_ptr);
 			auto client = clients[key];
 
-			if (p_over != &client->io_ov) {
-				for (auto i = 0; i < new_user_id; ++i) {
-					auto client = clients[i];
-					if (i % thread_num == thread_id) {
-						client->do_rountine();
-					}
-				}
+			if (p_over == nullptr) {
+				client->do_rountine();
 
-				PostQueuedCompletionStatus(g_iocp, 0, key, &client->io_ov);
+				if (client->is_connected)
+					PostQueuedCompletionStatus(g_iocp, 0, key, nullptr);
 			}
-			else
+			else if(p_over == &client->io_ov)
 			{
 				RIORESULT results[10];
 				auto num_result = rio_ftable.RIODequeueCompletion(client->rio_cq, results, 10);
-				rio_ftable.RIONotify(client->rio_cq); // client의 rio_cq에서 필요한 만큼 dequeue를 끝냈으므로 다른 worker thread에게 처리를 넘겨도 됨.
 
 				if (RIO_CORRUPT_CQ == num_result) {
 					fprintf(stderr, "RIODequeueCompletion error\n");
@@ -108,6 +100,7 @@ void do_worker(int t_id)
 						cerr << "Unknown Event Type :" << req_info->type << endl;
 					}
 				}
+				rio_ftable.RIONotify(client->rio_cq);
 			}
 		}
 	}

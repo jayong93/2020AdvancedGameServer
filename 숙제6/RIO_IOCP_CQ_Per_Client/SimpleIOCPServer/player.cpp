@@ -15,6 +15,7 @@ void Player::do_rountine()
 	if (this->is_connected == false) return;
 
 	if (this->can_recv.load(std::memory_order_relaxed)) {
+		this->can_recv.store(false, std::memory_order_relaxed);
 		auto req_info = this->recv_request;
 		int ret = rio_ftable.RIOReceive(this->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
 		if (TRUE != ret) {
@@ -22,7 +23,6 @@ void Player::do_rountine()
 			if (WSA_IO_PENDING != err_no)
 				error_display("RIOReceive Error :", err_no);
 		}
-		this->can_recv.store(false, std::memory_order_relaxed);
 	}
 
 	auto num_to_send = min(MAX_PENDING_SEND - this->pending_sends, this->delayed_sends.size());

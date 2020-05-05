@@ -3,6 +3,7 @@
 #include "protocol.h"
 
 // thread 1개가 여러 zone을 담당하긴 하지만, 한 thread에 묶여있는 zone은 sequential하게 처리되므로 send_queue도 thread 개수 만큼만 있으면 된다
+extern HANDLE g_iocp;
 
 bool Zone::check_is_player_disconnected(Player* p)
 {
@@ -108,6 +109,8 @@ void init_zones()
 			zones.emplace_back(new Zone{ center_x, center_y });
 		}
 	}
+	for (auto i = 0; i < zones.size(); ++i)
+		PostQueuedCompletionStatus(g_iocp, 0, MAXULONG_PTR, (LPOVERLAPPED)i);
 }
 
 bool is_near(int a_x, int a_y, int b_x, int b_y)
