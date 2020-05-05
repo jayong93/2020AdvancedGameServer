@@ -40,9 +40,8 @@ namespace player_msg {
 	struct PlayerLeaved {
 		int player_id;
 	};
-	struct Logout {};
 
-	using PlayerMsg = std::variant<PlayerLeaved, PlayerListResponse, PlayerMoved, Logout>;
+	using PlayerMsg = std::variant<PlayerLeaved, PlayerListResponse, PlayerMoved>;
 }
 
 struct NearListInfo {
@@ -59,7 +58,7 @@ struct Player
 	int		id;
 	char	name[MAX_STR_LEN] = { 0 };
 
-	bool is_connected = false;
+	bool is_connected = true;
 	short	x, y;
 	unsigned move_time = 0;
 	std::set <int> near_id;

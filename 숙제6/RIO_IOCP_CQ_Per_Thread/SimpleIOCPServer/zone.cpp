@@ -4,6 +4,18 @@
 
 // thread 1개가 여러 zone을 담당하긴 하지만, 한 thread에 묶여있는 zone은 sequential하게 처리되므로 send_queue도 thread 개수 만큼만 있으면 된다
 
+bool Zone::check_is_player_disconnected(Player* p)
+{
+	if (p->is_connected == false) {
+		if (this->clients.erase(p->id) > 0) {
+			empty_ids.emplace(p->id, system_clock::now());
+			fprintf(stderr, "Player #%d has been disconnected\n", p->id);
+		}
+		return true;
+	}
+	return false;
+}
+
 void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 {
 	for (auto i = 0; i < MAX_ZONE_ROUTINE_LOOP_TIME; ++i) {
@@ -17,6 +29,7 @@ void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 			[this, &client_list](zone_msg::PlayerIn& m) {
 				this->clients.emplace(m.player_id);
 				Player* me = client_list[m.player_id];
+				if (this->check_is_player_disconnected(me)) return;
 				me->x = m.x;
 				me->y = m.y;
 
@@ -31,6 +44,7 @@ void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 			[this, &client_list](zone_msg::PlayerMove& m) {
 				auto bound = this->get_bound();
 				auto me = client_list[m.player_id];
+				if (this->check_is_player_disconnected(me)) return;
 
 				if (!bound.is_in(m.x, m.y)) {
 					this->clients.erase(m.player_id);
@@ -50,8 +64,10 @@ void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 				}
 			},
 			[this](zone_msg::PlayerLeave& m) {
-				this->clients.erase(m.player_id);
-				fprintf(stderr, "Player #%d has been disconnected\n", m.player_id);
+				if (this->clients.erase(m.player_id) > 0) {
+					empty_ids.emplace(m.player_id, system_clock::now());
+					fprintf(stderr, "Player #%d has been disconnected\n", m.player_id);
+				}
 			},
 			}, *msg);
 	}

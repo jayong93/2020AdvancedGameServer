@@ -22,7 +22,6 @@ struct SendBufInfo {
 struct PendingSend {
 	int id;
 	RequestInfo* send_buf;
-	bool send_only_connected;
 };
 
 #ifdef SEND_PACKET_IMPL
@@ -41,19 +40,20 @@ extern PCHAR rio_buffer;
 
 RequestInfo& acquire_send_buf();
 void release_send_buf(RequestInfo& buf);
-void send_to_queue(int id, RequestInfo& req_info, bool send_only_connected);
+void send_to_queue(int id, RequestInfo& req_info);
 
 template<typename Packet, typename Init>
-void send_packet(int id, std::array<Player*, client_limit>& clients, Init func, bool send_only_connected = true)
+void send_packet(int id, std::array<Player*, client_limit>& clients, Init func)
 {
 	auto client = clients[id];
+	if (client->is_connected == false) return;
 	RequestInfo& req_info = acquire_send_buf();
 
 	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + (req_info.rio_buf->Offset));
 	func(*packet);
 	req_info.rio_buf->Length = sizeof(Packet);
 
-	send_to_queue(id, req_info, send_only_connected);
+	send_to_queue(id, req_info);
 }
 
 void send_login_ok_packet(int id);

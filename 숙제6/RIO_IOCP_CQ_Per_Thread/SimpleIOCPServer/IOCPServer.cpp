@@ -64,7 +64,14 @@ void error_display(const char* msg, int err_no)
 
 void Disconnect(int id)
 {
-	clients[id]->msg_queue.emplace(player_msg::Logout{});
+	auto client = clients[id];
+	client->is_connected = false;
+	closesocket(client->socket);
+
+	client->curr_zone->msg_queue.emplace(zone_msg::PlayerLeave{ client->id });
+	for (int id : client->near_id) {
+		clients[id]->msg_queue.emplace(player_msg::PlayerLeaved{ client->id });
+	}
 }
 
 void ProcessMove(int id, unsigned char dir)
@@ -180,7 +187,8 @@ void do_worker(int t_id)
 					send_queue.emplace(std::move(send));
 					continue;
 				}
-				if (client->is_connected == false && send.send_only_connected) {
+				if (client->is_connected == false) {
+					release_send_buf(*send.send_buf);
 					continue;
 				}
 
@@ -205,6 +213,7 @@ void do_worker(int t_id)
 			for (auto rq : sended_rqs) {
 				rio_ftable.RIOSend(rq, nullptr, 0, RIO_MSG_COMMIT_ONLY, nullptr);
 			}
+
 
 			PostQueuedCompletionStatus(g_iocp[thread_id], 0, 0, nullptr);
 		}
@@ -340,9 +349,10 @@ void handle_connection(SOCKET clientSocket) {
 	int user_id = -1;
 	if (!empty_ids.is_empty()) {
 		const auto& empty_id = empty_ids.peek();
-		if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > 2000)
+		if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > CLIENT_DELETE_PERIOD)
 			empty_ids.deq();
 		user_id = empty_id.id;
+		delete clients[user_id];
 	}
 	else if (client_limit <= new_user_id + 1) {
 		while (true) {
@@ -352,9 +362,10 @@ void handle_connection(SOCKET clientSocket) {
 			}
 			else {
 				const auto& empty_id = empty_ids.peek();
-				if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > 2000) {
+				if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > CLIENT_DELETE_PERIOD) {
 					empty_ids.deq();
 					user_id = empty_id.id;
+					delete clients[user_id];
 					break;
 				}
 				else {
@@ -367,6 +378,7 @@ void handle_connection(SOCKET clientSocket) {
 	else {
 		user_id = new_user_id;
 	}
+
 
 	if (user_id < 0) {
 		fprintf(stderr, "Something wrong with a new client id\n");

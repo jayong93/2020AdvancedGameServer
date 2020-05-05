@@ -9,6 +9,7 @@ constexpr int send_buf_num = client_limit * 50;
 constexpr float SEND_BUF_RATE_ON_BUSY = 0.1f;
 constexpr unsigned MAX_PLAYER_ROUTINE_LOOP_TIME = 10;
 constexpr unsigned MAX_ZONE_ROUTINE_LOOP_TIME = 50;
+constexpr unsigned CLIENT_DELETE_PERIOD = 2000; // ms
 
 template<class... Ts> struct overloaded : Ts... {
     using Ts::operator()...;
