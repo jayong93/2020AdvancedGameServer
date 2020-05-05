@@ -13,6 +13,14 @@ extern std::array<Player*, client_limit> clients;
 void Player::do_rountine()
 {
 	if (this->is_connected == false) return;
+
+	auto num_to_send = min(MAX_PENDING_SEND - this->pending_sends, this->delayed_sends.size());
+	for (auto i = 0; i < num_to_send; ++i) {
+		auto& req_info = *this->delayed_sends.front();
+		this->delayed_sends.pop_front();
+		this->send_request(req_info);
+	}
+
 	for (auto i = 0; i < MAX_PLAYER_ROUTINE_LOOP_TIME; ++i) {
 		optional<player_msg::PlayerMsg> msg = this->msg_queue.deq();
 		if (!msg) { break; }
@@ -91,6 +99,13 @@ void Player::update_near_list(NearListInfo& near_info)
 	}
 
 	old_near = std::move(new_near);
+}
+
+Player::~Player()
+{
+	for (auto send : delayed_sends) {
+		release_send_buf(*send);
+	}
 }
 
 void Player::assemble_packet(RequestInfo* req_info, size_t received_bytes)
@@ -213,6 +228,25 @@ void Player::process_move(char direction)
 
 void Player::process_chat(char* str)
 {
+}
+
+void Player::send_request(RequestInfo& req_info)
+{
+	auto ret = rio_ftable.RIOSend(this->rio_rq, req_info.rio_buf, 1, RIO_MSG_DEFER, (void*)&req_info);
+	if (TRUE != ret) {
+		int err_no = WSAGetLastError();
+		switch (err_no) {
+		case WSA_IO_PENDING:
+			this->pending_sends++;
+			break;
+		default:
+			error_display("RIOSend Error :", err_no);
+			release_send_buf(req_info);
+		}
+	}
+	else {
+		this->pending_sends++;
+	}
 }
 
 void Player::send_login_ok_packet()

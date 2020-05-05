@@ -6,6 +6,7 @@
 #include <atomic>
 #include <variant>
 #include <vector>
+#include <deque>
 #include <map>
 #include <chrono>
 #include <string>
@@ -72,6 +73,7 @@ struct Player
 	uint64_t stamp = 0;
 	std::map<uint64_t, NearListInfo> pending_near_request;
 	uint64_t pending_sends = 0;
+	std::deque<RequestInfo*> delayed_sends;
 
 	void do_rountine();
 	void update_near_list(NearListInfo&);
@@ -79,6 +81,7 @@ struct Player
 	Player(int id, SOCKET socket, short x, short y, char* recv_buf, RIO_RQ rq, Zone* curr_zone) : id{ id }, socket{ socket }, x{ x }, y{ y }, recv_buf{ recv_buf }, rio_rq{ rq }, curr_zone{ curr_zone } {}
 	Player(const Player&) = delete;
 	Player(Player&&) = delete;
+	~Player();
 
 	void assemble_packet(RequestInfo* req_info, size_t received_bytes);
 	void process_packet(void* buff);
@@ -94,22 +97,14 @@ private:
 		func(*packet);
 		req_info.rio_buf->Length = sizeof(Packet);
 
-		auto ret = rio_ftable.RIOSend(this->rio_rq, req_info.rio_buf, 1, RIO_MSG_DEFER, (void*)&req_info);
-		if (TRUE != ret) {
-			int err_no = WSAGetLastError();
-			switch (err_no) {
-			case WSA_IO_PENDING:
-				this->pending_sends++;
-				break;
-			default:
-				error_display("RIOSend Error :", err_no);
-				release_send_buf(req_info);
-			}
+		if (pending_sends >= MAX_PENDING_SEND) {
+			this->delayed_sends.emplace_back(&req_info);
+			return;
 		}
-		else {
-			this->pending_sends++;
-		}
+
+		this->send_request(req_info);
 	}
+	void send_request(RequestInfo& req_info);
 
 	void send_login_ok_packet();
 	void send_login_fail();
