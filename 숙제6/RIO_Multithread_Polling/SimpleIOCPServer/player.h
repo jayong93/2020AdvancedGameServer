@@ -40,9 +40,8 @@ namespace player_msg {
 	struct PlayerLeaved {
 		int player_id;
 	};
-	struct Logout {};
 
-	using PlayerMsg = std::variant<PlayerLeaved, PlayerListResponse, PlayerMoved, Logout>;
+	using PlayerMsg = std::variant<PlayerLeaved, PlayerListResponse, PlayerMoved>;
 }
 
 struct NearListInfo {

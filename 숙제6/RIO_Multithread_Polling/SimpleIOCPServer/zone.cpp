@@ -8,7 +8,8 @@ bool Zone::check_is_player_disconnected(Player* p)
 {
 	if (p->is_connected == false) {
 		if (this->clients.erase(p->id) > 0) {
-			fprintf(stderr, "Player #%d has been disconnected\n", m.player_id);
+			empty_ids.emplace(p->id, system_clock::now());
+			fprintf(stderr, "Player #%d has been disconnected\n", p->id);
 		}
 		return true;
 	}
@@ -63,8 +64,10 @@ void Zone::do_routine(std::array<Player*, client_limit>& client_list)
 				}
 			},
 			[this](zone_msg::PlayerLeave& m) {
-				if (this->clients.erase(m.player_id) > 0)
+				if (this->clients.erase(m.player_id) > 0) {
+					empty_ids.emplace(m.player_id, system_clock::now());
 					fprintf(stderr, "Player #%d has been disconnected\n", m.player_id);
+				}
 			},
 			}, *msg);
 	}

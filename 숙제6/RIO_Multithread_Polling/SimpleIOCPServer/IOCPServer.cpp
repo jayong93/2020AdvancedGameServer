@@ -60,7 +60,14 @@ void error_display(const char* msg, int err_no)
 
 void Disconnect(int id)
 {
-	clients[id]->msg_queue.emplace(player_msg::Logout{});
+	auto client = clients[id];
+	client->is_connected = false;
+	closesocket(client->socket);
+
+	client->curr_zone->msg_queue.emplace(zone_msg::PlayerLeave{ client->id });
+	for (int id : client->near_id) {
+		clients[id]->msg_queue.emplace(player_msg::PlayerLeaved{ client->id });
+	}
 }
 
 void ProcessMove(int id, unsigned char dir)

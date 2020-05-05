@@ -43,16 +43,6 @@ void Player::do_rountine()
 					send_put_object_packet(this->id, m.player_id, m.x, m.y);
 				}
 			},
-			[this](player_msg::Logout& _) {
-				this->is_connected = false;
-				closesocket(this->socket);
-
-				this->curr_zone->msg_queue.emplace(zone_msg::PlayerLeave{ this->id });
-				for (int id : this->near_id) {
-					clients[id]->msg_queue.emplace(player_msg::PlayerLeaved{ this->id });
-				}
-				empty_ids.emplace(id, system_clock::now());
-			},
 		}, *msg);
 	}
 }
