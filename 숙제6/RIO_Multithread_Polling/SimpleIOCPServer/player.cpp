@@ -10,6 +10,7 @@ extern std::array<Player*, client_limit> clients;
 
 void Player::do_rountine()
 {
+	if (this->is_connected == false) return;
 	for (auto i = 0; i < MAX_PLAYER_ROUTINE_LOOP_TIME; ++i) {
 		optional<player_msg::PlayerMsg> msg = this->msg_queue.deq();
 		if (!msg) { return; }
@@ -70,10 +71,6 @@ void Player::update_near_list(NearListInfo& near_info)
 	for (int new_id : new_near) {
 		auto it = old_near.find(new_id);
 		if (it == old_near.end()) {
-			// 내가 처음 위치를 전송 받았으면
-			if (new_id == this->id) {
-				this->is_connected = true;
-			}
 			send_put_object_packet(this->id, new_id, clients[new_id]->x, clients[new_id]->y);
 		}
 		else {

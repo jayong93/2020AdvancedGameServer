@@ -178,8 +178,7 @@ void do_worker(int t_id)
 					release_send_buf(*req_info);
 				}
 				continue;
-			}  // 클라이언트가 closesocket을 했을 경우		
-			//OVER_EX* over_ex = reinterpret_cast<OVER_EX*> (p_over);
+			}
 
 
 			if (EV_RECV == req_info->type) {
@@ -242,7 +241,7 @@ void do_worker(int t_id)
 				send_queue.emplace(std::move(send));
 				continue;
 			}
-			if (client->is_connected == false && send.send_only_connected) {
+			if (client->is_connected == false) {
 				continue;
 			}
 

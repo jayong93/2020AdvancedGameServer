@@ -69,6 +69,7 @@ struct Zone {
 	Zone(const Zone&) = delete;
 	Zone(Zone&&) = delete;
 
+	bool check_is_player_disconnected(Player* p);
 	void do_routine(std::array<Player*, client_limit>& client_list);
 	void send_near_players(Player* p, int x, int y, uint64_t stamp, std::array<Player*, client_limit>& client_list, int total_list_num) const;
 	Bound get_bound() const;
