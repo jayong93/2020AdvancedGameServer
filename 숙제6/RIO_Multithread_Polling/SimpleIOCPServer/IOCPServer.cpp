@@ -23,14 +23,6 @@ using namespace std::chrono;
 
 #include "protocol.h"
 
-struct SendInfo {
-	SendInfo() = default;
-	SendInfo(int id, unique_ptr<char[]>&& data) : id{ id }, data{ std::move(data) } {}
-
-	int id;
-	unique_ptr<char[]> data;
-};
-
 thread_local int thread_id;
 
 std::array<Player*, client_limit> clients;
