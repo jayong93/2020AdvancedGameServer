@@ -16,30 +16,14 @@
 #include "packet.h"
 #include "zone.h"
 #include "consts.h"
+#include "util.h"
+#include "network.h"
 
 using std::set, std::mutex, std::cout, std::cerr, std::wcout, std::endl, std::lock_guard, std::vector, std::make_pair, std::thread, std::unique_ptr, std::make_unique;
 using namespace std::chrono;
-#include <WS2tcpip.h>
-#include <MSWSock.h>
-#pragma comment(lib, "Ws2_32.lib")
 
 #include "protocol.h"
 
-float rand_float(float min, float max) {
-	return ((float)rand() / (float)RAND_MAX) * (max - min) + min;
-}
-
-struct SendInfo {
-	SendInfo() = default;
-	SendInfo(int id, unique_ptr<char[]>&& data) : id{ id }, data{ std::move(data) } {}
-
-	int id;
-	unique_ptr<char[]> data;
-};
-
-RIO_EXTENSION_FUNCTION_TABLE rio_ftable;
-PCHAR rio_buffer;
-RIO_BUFFERID rio_buf_id;
 thread_local int thread_id;
 HANDLE	g_iocp[thread_num];
 OVERLAPPED completion_overs[thread_num];
@@ -47,106 +31,6 @@ OVERLAPPED completion_overs[thread_num];
 std::array<Player*, client_limit> clients;
 
 int new_user_id = 0;
-
-void error_display(const char* msg, int err_no)
-{
-	WCHAR* lpMsgBuf;
-	FormatMessage(
-		FORMAT_MESSAGE_ALLOCATE_BUFFER |
-		FORMAT_MESSAGE_FROM_SYSTEM,
-		NULL, err_no,
-		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-		(LPTSTR)&lpMsgBuf, 0, NULL);
-	cout << msg;
-	wcout << L"에러 " << lpMsgBuf << endl;
-	LocalFree(lpMsgBuf);
-}
-
-void Disconnect(int id)
-{
-	auto client = clients[id];
-	client->is_connected = false;
-	closesocket(client->socket);
-
-	client->curr_zone->msg_queue.emplace(zone_msg::PlayerLeave{ client->id });
-	for (int id : client->near_id) {
-		clients[id]->msg_queue.emplace(player_msg::PlayerLeaved{ client->id });
-	}
-}
-
-void ProcessMove(int id, unsigned char dir)
-{
-	short x = clients[id]->x;
-	short y = clients[id]->y;
-	switch (dir) {
-	case D_UP: if (y > 0) y--;
-		break;
-	case D_DOWN: if (y < WORLD_HEIGHT - 1) y++;
-		break;
-	case D_LEFT: if (x > 0) x--;
-		break;
-	case D_RIGHT: if (x < WORLD_WIDTH - 1) x++;
-		break;
-	case 99:
-		x = (short)rand_float(0, WORLD_WIDTH);
-		y = (short)rand_float(0, WORLD_HEIGHT);
-		break;
-	default:
-		cerr << "Invalid Direction Error\n";
-		return;
-	}
-
-	auto stamp = clients[id]->stamp++;
-	clients[id]->curr_zone->msg_queue.emplace(zone_msg::PlayerMove{ id, stamp, x, y });
-}
-
-void ProcessLogin(int user_id, char* id_str)
-{
-	Player* client = clients[user_id];
-	strcpy_s(client->name, id_str);
-	send_login_ok_packet(user_id);
-
-	Zone* my_zone = client->curr_zone;
-	auto stamp = client->stamp++;
-	my_zone->msg_queue.emplace(zone_msg::PlayerIn{ user_id, stamp, client->x, client->y });
-}
-
-void ProcessChat(int id, char* mess)
-{
-}
-
-void ProcessPacket(int id, void* buff)
-{
-	char* packet = reinterpret_cast<char*>(buff);
-	switch (packet[1]) {
-	case CS_LOGIN: {
-		cs_packet_login* login_packet = reinterpret_cast<cs_packet_login*>(packet);
-		ProcessLogin(id, login_packet->id);
-	}
-				 break;
-	case CS_MOVE: {
-		cs_packet_move* move_packet = reinterpret_cast<cs_packet_move*>(packet);
-		clients[id]->move_time = move_packet->move_time;
-		ProcessMove(id, move_packet->direction);
-	}
-				break;
-	case CS_ATTACK:
-		break;
-	case CS_CHAT:
-	{
-		cs_packet_chat* chat_packet = reinterpret_cast<cs_packet_chat*>(packet);
-		ProcessChat(id, chat_packet->chat_str);
-	}
-	break;
-	case CS_LOGOUT:
-		break;
-	case CS_TELEPORT:
-		ProcessMove(id, 99);
-		break;
-	default:
-		cerr << "Invalid Packet Type Error\n";
-	}
-}
 
 void do_worker(int t_id)
 {
@@ -173,48 +57,6 @@ void do_worker(int t_id)
 				}
 			}
 
-			set<RIO_RQ> sended_rqs;
-			auto& send_queue = send_queues[thread_id];
-			auto pending_num = send_queue.size();
-			for (auto i = 0; i < pending_num; ++i) {
-				auto send_option = send_queue.deq();
-				if (!send_option) break;
-
-				auto send = *std::move(send_option);
-				auto client = clients[send.id];
-
-				if (client->pending_sends >= MAX_PENDING_SEND) {
-					send_queue.emplace(std::move(send));
-					continue;
-				}
-				if (client->is_connected == false) {
-					release_send_buf(*send.send_buf);
-					continue;
-				}
-
-				auto ret = rio_ftable.RIOSend(client->rio_rq, send.send_buf->rio_buf, 1, RIO_MSG_DEFER, (void*)send.send_buf);
-				if (TRUE != ret) {
-					int err_no = WSAGetLastError();
-					switch (err_no) {
-					case WSA_IO_PENDING:
-						client->pending_sends++;
-						sended_rqs.emplace(client->rio_rq);
-						break;
-					default:
-						error_display("RIOSend Error :", err_no);
-						release_send_buf(*send.send_buf);
-					}
-				}
-				else {
-					client->pending_sends++;
-					sended_rqs.emplace(client->rio_rq);
-				}
-			}
-			for (auto rq : sended_rqs) {
-				rio_ftable.RIOSend(rq, nullptr, 0, RIO_MSG_COMMIT_ONLY, nullptr);
-			}
-
-
 			PostQueuedCompletionStatus(g_iocp[thread_id], 0, 0, nullptr);
 		}
 		else
@@ -232,68 +74,32 @@ void do_worker(int t_id)
 				const RIORESULT& result = results[i];
 				int client_id = result.SocketContext;
 				auto req_info = (RequestInfo*)(result.RequestContext);
+				auto client = clients[client_id];
 
 				if (result.BytesTransferred == 0) {
 					if (EV_RECV == req_info->type) {
 						delete req_info->rio_buf;
 						delete req_info;
-						Disconnect(client_id);
+						client->disconnect();
 					}
 					else if (EV_SEND == req_info->type) {
-						clients[client_id]->pending_sends--;
+						client->pending_sends--;
 						release_send_buf(*req_info);
 					}
 					continue;
-				}  // 클라이언트가 closesocket을 했을 경우		
-				//OVER_EX* over_ex = reinterpret_cast<OVER_EX*> (p_over);
-
+				}
 
 				if (EV_RECV == req_info->type) {
-					auto client = clients[client_id];
-					char* p = client->recv_buf;
-					unsigned remain = result.BytesTransferred;
-					unsigned packet_size;
-					unsigned prev_packet_size = client->prev_packet_size;
-					if (0 == prev_packet_size)
-						packet_size = 0;
-					else packet_size = p[0];
-
-					while (remain > 0) {
-						if (0 == packet_size) packet_size = p[0];
-						int required = packet_size - prev_packet_size;
-						if (required <= remain) {
-							ProcessPacket(client_id, p);
-							remain -= required;
-							p += packet_size;
-							prev_packet_size = 0;
-							packet_size = 0;
-						}
-						else {
-							memmove(client->recv_buf, p, remain);
-							prev_packet_size += remain;
-							break;
-						}
-					}
-					client->prev_packet_size = prev_packet_size;
-					req_info->rio_buf->Offset = client_id * MAX_BUFFER + prev_packet_size;
-					req_info->rio_buf->Length = MAX_BUFFER - prev_packet_size;
-
-					int ret = rio_ftable.RIOReceive(client->rio_rq, req_info->rio_buf, 1, 0, (void*)req_info);
-					if (TRUE != ret) {
-						int err_no = WSAGetLastError();
-						if (WSA_IO_PENDING != err_no)
-							error_display("RIOReceive Error :", err_no);
-					}
+					client->assemble_packet(req_info, result.BytesTransferred);
 				}
 				else if (EV_SEND == req_info->type) {
-					clients[client_id]->pending_sends--;
+					client->pending_sends--;
 					release_send_buf(*req_info);
 				}
 				else {
 					cerr << "Unknown Event Type :" << req_info->type << endl;
 				}
 			}
-
 		}
 	}
 }

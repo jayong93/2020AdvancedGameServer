@@ -148,16 +148,20 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="network.cpp" />
     <ClCompile Include="packet.cpp" />
     <ClCompile Include="player.cpp" />
+    <ClCompile Include="util.cpp" />
     <ClCompile Include="zone.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="consts.h" />
     <ClInclude Include="mpsc_queue.h" />
+    <ClInclude Include="network.h" />
     <ClInclude Include="packet.h" />
     <ClInclude Include="player.h" />
     <ClInclude Include="protocol.h" />
+    <ClInclude Include="util.h" />
     <ClInclude Include="zone.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

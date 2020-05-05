@@ -19,11 +19,6 @@ struct SendBufInfo {
 	std::atomic_uint64_t num_available_bufs;
 };
 
-struct PendingSend {
-	int id;
-	RequestInfo* send_buf;
-};
-
 #ifdef SEND_PACKET_IMPL
 #define EXTERN
 #else
@@ -33,37 +28,10 @@ struct PendingSend {
 EXTERN RIO_CQ rio_cq_list[thread_num];
 EXTERN MPSCQueue<RequestInfo*> available_send_reqs[thread_num];
 EXTERN SendBufInfo send_buf_infos[thread_num];
-EXTERN MPSCQueue<PendingSend> send_queues[thread_num];
 extern PCHAR rio_buffer;
 
 #undef EXTERN
 
 RequestInfo& acquire_send_buf();
 void release_send_buf(RequestInfo& buf);
-void send_to_queue(int id, RequestInfo& req_info);
 
-template<typename Packet, typename Init>
-void send_packet(int id, std::array<Player*, client_limit>& clients, Init func)
-{
-	auto client = clients[id];
-	if (client->is_connected == false) return;
-	RequestInfo& req_info = acquire_send_buf();
-
-	Packet* packet = reinterpret_cast<Packet*>(rio_buffer + (req_info.rio_buf->Offset));
-	func(*packet);
-	req_info.rio_buf->Length = sizeof(Packet);
-
-	send_to_queue(id, req_info);
-}
-
-void send_login_ok_packet(int id);
-
-void send_login_fail(int id);
-
-void send_put_object_packet(int client, int new_id, int x, int y);
-
-void send_pos_packet(int client, int mover, int x, int y);
-
-void send_remove_object_packet(int client, int leaver);
-
-void send_chat_packet(int client, int teller, char* mess);

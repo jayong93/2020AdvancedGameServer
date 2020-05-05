@@ -6,10 +6,14 @@
 #include <atomic>
 #include <variant>
 #include <vector>
+#include <deque>
 #include <map>
 #include <chrono>
+#include <string>
 #include "protocol.h"
 #include "mpsc_queue.h"
+#include "packet.h"
+#include "network.h"
 
 using namespace std::chrono;
 
@@ -69,6 +73,7 @@ struct Player
 	uint64_t stamp = 0;
 	std::map<uint64_t, NearListInfo> pending_near_request;
 	uint64_t pending_sends = 0;
+	std::deque<RequestInfo*> delayed_sends;
 
 	void do_rountine();
 	void update_near_list(NearListInfo&);
@@ -76,5 +81,40 @@ struct Player
 	Player(int id, SOCKET socket, short x, short y, char* recv_buf, RIO_RQ rq, Zone* curr_zone) : id{ id }, socket{ socket }, x{ x }, y{ y }, recv_buf{ recv_buf }, rio_rq{ rq }, curr_zone{ curr_zone } {}
 	Player(const Player&) = delete;
 	Player(Player&&) = delete;
+	~Player();
+
+	void assemble_packet(RequestInfo* req_info, size_t received_bytes);
+	void process_packet(void* buff);
+	void disconnect();
+private:
+	template<typename Packet, typename Init>
+	void send_packet(Init func)
+	{
+		if (this->is_connected == false) return;
+		RequestInfo& req_info = acquire_send_buf();
+
+		Packet* packet = reinterpret_cast<Packet*>(rio_buffer + (req_info.rio_buf->Offset));
+		func(*packet);
+		req_info.rio_buf->Length = sizeof(Packet);
+
+		if (pending_sends >= MAX_PENDING_SEND) {
+			this->delayed_sends.emplace_back(&req_info);
+			return;
+		}
+
+		this->send_request(req_info);
+	}
+	void send_request(RequestInfo& req_info);
+
+	void send_login_ok_packet();
+	void send_login_fail();
+	void send_put_object_packet(int new_id, int x, int y);
+	void send_pos_packet(int mover, int x, int y);
+	void send_remove_object_packet(int leaver);
+	void send_chat_packet(int teller, char* mess);
+
+	void process_login(char* name);
+	void process_move(char direction);
+	void process_chat(char* str);
 };
 
