@@ -5,8 +5,6 @@
 #include <mutex>
 #include <chrono>
 #include <queue>
-#include <concurrent_unordered_map.h>
-#include <concurrent_queue.h>
 #include <memory>
 #include <optional>
 #include <atomic>
@@ -142,7 +140,6 @@ void ProcessPacket(int id, void* buff)
 void do_worker(int t_id)
 {
 	thread_id = t_id;
-	size_t pending_send_completion = 0;
 
 	while (true)
 	{
@@ -177,7 +174,7 @@ void do_worker(int t_id)
 					Disconnect(client_id);
 				}
 				else if (EV_SEND == req_info->type) {
-					pending_send_completion--;
+					clients[client_id]->pending_sends--;
 					release_send_buf(*req_info);
 				}
 				continue;
@@ -223,7 +220,7 @@ void do_worker(int t_id)
 				}
 			}
 			else if (EV_SEND == req_info->type) {
-				pending_send_completion--;
+				clients[client_id]->pending_sends--;
 				release_send_buf(*req_info);
 			}
 			else {
@@ -231,27 +228,44 @@ void do_worker(int t_id)
 			}
 		}
 
-		const auto threshold = MAX_PENDING_SEND * max(new_user_id / thread_num, 1) * 0.9;
-
-		if (threshold - pending_send_completion < 0) continue;
-
-		for (auto i = 0; i < threshold - pending_send_completion; ++i) {
-			auto send_option = send_queues[thread_id].deq();
+		set<RIO_RQ> sended_rqs;
+		auto& send_queue = send_queues[thread_id];
+		auto pending_num = send_queue.size();
+		for (auto i = 0; i < pending_num; ++i) {
+			auto send_option = send_queue.deq();
 			if (!send_option) break;
 
-			auto& send = *send_option;
-			auto ret = rio_ftable.RIOSend(clients[send.id]->rio_rq, send.send_buf->rio_buf, 1, 0, (void*)send.send_buf);
-			pending_send_completion++;
+			auto send = *std::move(send_option);
+			auto client = clients[send.id];
+
+			if (client->pending_sends >= MAX_PENDING_SEND) {
+				send_queue.emplace(std::move(send));
+				continue;
+			}
+			if (client->is_connected == false && send.send_only_connected) {
+				continue;
+			}
+
+			auto ret = rio_ftable.RIOSend(client->rio_rq, send.send_buf->rio_buf, 1, RIO_MSG_DEFER, (void*)send.send_buf);
 			if (TRUE != ret) {
 				int err_no = WSAGetLastError();
 				switch (err_no) {
 				case WSA_IO_PENDING:
+					client->pending_sends++;
+					sended_rqs.emplace(client->rio_rq);
 					break;
 				default:
 					error_display("RIOSend Error :", err_no);
 					release_send_buf(*send.send_buf);
 				}
 			}
+			else {
+				client->pending_sends++;
+				sended_rqs.emplace(client->rio_rq);
+			}
+		}
+		for (auto rq : sended_rqs) {
+			rio_ftable.RIOSend(rq, nullptr, 0, RIO_MSG_COMMIT_ONLY, nullptr);
 		}
 	}
 }
