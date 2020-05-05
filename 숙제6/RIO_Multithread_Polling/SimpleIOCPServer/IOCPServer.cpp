@@ -316,9 +316,10 @@ void handle_connection(SOCKET clientSocket) {
 	int user_id = -1;
 	if (!empty_ids.is_empty()) {
 		const auto& empty_id = empty_ids.peek();
-		if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > 2000)
+		if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > CLIENT_DELETE_PERIOD)
 			empty_ids.deq();
 		user_id = empty_id.id;
+		delete clients[user_id];
 	}
 	else if (client_limit <= new_user_id + 1) {
 		while (true) {
@@ -328,9 +329,10 @@ void handle_connection(SOCKET clientSocket) {
 			}
 			else {
 				const auto& empty_id = empty_ids.peek();
-				if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > 2000) {
+				if (duration_cast<milliseconds>(empty_id.out_time.time_since_epoch()).count() > CLIENT_DELETE_PERIOD) {
 					empty_ids.deq();
 					user_id = empty_id.id;
+					delete clients[user_id];
 					break;
 				}
 				else {
