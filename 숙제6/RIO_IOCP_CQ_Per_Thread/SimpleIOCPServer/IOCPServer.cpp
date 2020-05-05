@@ -90,7 +90,7 @@ void do_worker(int t_id)
 				}
 
 				if (EV_RECV == req_info->type) {
-					client->assemble_packet(req_info, result.BytesTransferred);
+					client->handle_recv(req_info, result.BytesTransferred);
 				}
 				else if (EV_SEND == req_info->type) {
 					client->pending_sends--;

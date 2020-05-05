@@ -83,7 +83,7 @@ struct Player
 	Player(Player&&) = delete;
 	~Player();
 
-	void assemble_packet(RequestInfo* req_info, size_t received_bytes);
+	void handle_recv(RequestInfo* req_info, size_t received_bytes);
 	void process_packet(void* buff);
 	void disconnect();
 private:

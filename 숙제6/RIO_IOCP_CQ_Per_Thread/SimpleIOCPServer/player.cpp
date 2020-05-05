@@ -108,7 +108,7 @@ Player::~Player()
 	}
 }
 
-void Player::assemble_packet(RequestInfo* req_info, size_t received_bytes)
+void Player::handle_recv(RequestInfo* req_info, size_t received_bytes)
 {
 	char* p = this->recv_buf;
 	auto remain = received_bytes;
