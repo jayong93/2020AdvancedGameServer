@@ -35,6 +35,7 @@ int new_user_id = 0;
 void do_worker(int t_id)
 {
 	thread_id = t_id;
+	std::unique_ptr<RIORESULT[]> results{ new RIORESULT[10000] };
 
 	while (true)
 	{
@@ -61,8 +62,7 @@ void do_worker(int t_id)
 		}
 		else
 		{
-			RIORESULT results[100];
-			auto num_result = rio_ftable.RIODequeueCompletion(rio_cq_list[thread_id], results, 100);
+			auto num_result = rio_ftable.RIODequeueCompletion(rio_cq_list[thread_id], results.get(), 10000);
 			rio_ftable.RIONotify(rio_cq_list[thread_id]); // client의 rio_cq에서 필요한 만큼 dequeue를 끝냈으므로 다른 worker thread에게 처리를 넘겨도 됨.
 
 			if (RIO_CORRUPT_CQ == num_result) {

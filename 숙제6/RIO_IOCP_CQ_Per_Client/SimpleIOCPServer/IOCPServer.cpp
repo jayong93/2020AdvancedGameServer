@@ -34,6 +34,7 @@ int new_user_id = 0;
 void do_worker(int t_id)
 {
 	thread_id = t_id;
+	std::unique_ptr<RIORESULT[]> results{new RIORESULT[10000]};
 
 	while (true)
 	{
@@ -60,10 +61,9 @@ void do_worker(int t_id)
 				if (client->is_connected.load(std::memory_order_relaxed))
 					PostQueuedCompletionStatus(g_iocp, 0, key, nullptr);
 			}
-			else if(p_over == &client->io_ov)
+			else if (p_over == &client->io_ov)
 			{
-				RIORESULT results[10];
-				auto num_result = rio_ftable.RIODequeueCompletion(client->rio_cq, results, 10);
+				auto num_result = rio_ftable.RIODequeueCompletion(client->rio_cq, results.get(), 10000);
 
 				if (RIO_CORRUPT_CQ == num_result) {
 					fprintf(stderr, "RIODequeueCompletion error\n");
