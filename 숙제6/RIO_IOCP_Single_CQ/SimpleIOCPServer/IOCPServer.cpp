@@ -61,8 +61,8 @@ void do_worker(int t_id)
 			}
 			else if(p_over == &completion_over)
 			{
-				RIORESULT results[1000];
-				auto num_result = rio_ftable.RIODequeueCompletion(rio_cq, results, 1000);
+				RIORESULT results[5000];
+				auto num_result = rio_ftable.RIODequeueCompletion(rio_cq, results, 5000);
 				rio_ftable.RIONotify(rio_cq);
 
 				if (RIO_CORRUPT_CQ == num_result) {
