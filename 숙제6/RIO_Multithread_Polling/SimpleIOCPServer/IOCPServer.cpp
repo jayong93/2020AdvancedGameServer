@@ -32,6 +32,7 @@ int new_user_id = 0;
 void do_worker(int t_id)
 {
 	thread_id = t_id;
+	RIORESULT* results = new RIORESULT[10000];
 
 	while (true)
 	{
@@ -46,8 +47,7 @@ void do_worker(int t_id)
 			}
 		}
 
-		RIORESULT results[100];
-		auto num_result = rio_ftable.RIODequeueCompletion(rio_cq_list[thread_id], results, 100);
+		auto num_result = rio_ftable.RIODequeueCompletion(rio_cq_list[thread_id], results, 10000);
 
 		if (RIO_CORRUPT_CQ == num_result) {
 			fprintf(stderr, "RIODequeueCompletion error\n");
@@ -85,6 +85,7 @@ void do_worker(int t_id)
 			}
 		}
 	}
+	delete[] results;
 }
 
 void init_rio(SOCKET listen_sock) {
