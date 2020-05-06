@@ -1,6 +1,5 @@
 #pragma once
 
-constexpr int MAX_ID_LEN = 50;
 constexpr int MAX_STR_LEN = 50;
 
 #define WORLD_WIDTH		400
@@ -48,7 +47,7 @@ struct sc_packet_pos {
 	char type;
 	int id;
 	short x, y;
-	int seq_no;
+	unsigned move_time;
 };
 
 struct sc_packet_put_object {
@@ -84,7 +83,7 @@ struct sc_packet_stat_change {
 struct cs_packet_login {
 	char	size;
 	char	type;
-	char	id[MAX_ID_LEN];
+	char	id[50];
 };
 
 constexpr unsigned char D_UP = 0;
@@ -96,7 +95,7 @@ struct cs_packet_move {
 	char	size;
 	char	type;
 	char	direction;
-	int		seq_no;
+	unsigned	move_time;
 };
 
 struct cs_packet_attack {
