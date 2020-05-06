@@ -23,6 +23,7 @@
     <ProjectGuid>{E40FC3FB-B142-4F07-9C78-F94DE508B86D}</ProjectGuid>
     <RootNamespace>SimpleIOCPServer</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>SingleThreadPolling</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -143,10 +144,21 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="IOCPServer.cpp" />
+    <ClCompile Include="network.cpp" />
+    <ClCompile Include="packet.cpp" />
+    <ClCompile Include="player.cpp" />
+    <ClCompile Include="util.cpp" />
+    <ClCompile Include="zone.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="consts.h" />
     <ClInclude Include="mpsc_queue.h" />
+    <ClInclude Include="network.h" />
+    <ClInclude Include="packet.h" />
+    <ClInclude Include="player.h" />
     <ClInclude Include="protocol.h" />
+    <ClInclude Include="util.h" />
+    <ClInclude Include="zone.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
