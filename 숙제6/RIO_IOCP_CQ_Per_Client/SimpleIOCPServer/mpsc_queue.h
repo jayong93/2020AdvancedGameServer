@@ -112,7 +112,6 @@ inline void MPSCQueue<T>::retire(QueueNode<T>* node)
 	}
 }
 
-#pragma optimize("", off)
 template<typename T>
 inline void MPSCQueue<T>::empty()
 {
@@ -131,7 +130,6 @@ inline void MPSCQueue<T>::empty()
 		});
 	retired_list.erase(removed_it, retired_list.end());
 }
-#pragma optimize("", on)
 
 template<typename T>
 inline void MPSCQueue<T>::inner_enq(QueueNode<T>& new_node)

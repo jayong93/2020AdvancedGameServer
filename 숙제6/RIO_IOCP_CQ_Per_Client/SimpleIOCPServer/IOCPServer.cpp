@@ -57,7 +57,7 @@ void do_worker(int t_id)
 			if (p_over == nullptr) {
 				client->do_rountine();
 
-				if (client->is_connected)
+				if (client->is_connected.load(std::memory_order_relaxed))
 					PostQueuedCompletionStatus(g_iocp, 0, key, nullptr);
 			}
 			else if(p_over == &client->io_ov)
@@ -78,8 +78,6 @@ void do_worker(int t_id)
 
 					if (result.BytesTransferred == 0) {
 						if (EV_RECV == req_info->type) {
-							delete req_info->rio_buf;
-							delete req_info;
 							client->disconnect();
 						}
 						else if (EV_SEND == req_info->type) {
@@ -263,7 +261,6 @@ int main()
 	vector<thread> worker_threads;
 	for (auto i = 0; i < thread_num; ++i) {
 		worker_threads.emplace_back(do_worker, i);
-		PostQueuedCompletionStatus(g_iocp, 0, MAXULONG_PTR, (LPOVERLAPPED)i);
 	}
 
 	printf("Server has started\n");

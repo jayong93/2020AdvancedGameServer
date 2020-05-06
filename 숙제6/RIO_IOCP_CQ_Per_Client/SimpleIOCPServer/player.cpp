@@ -12,7 +12,7 @@ extern std::array<Player*, client_limit> clients;
 
 void Player::do_rountine()
 {
-	if (this->is_connected == false) return;
+	if (this->is_connected.load(std::memory_order_relaxed) == false) return;
 
 	if (this->can_recv.load(std::memory_order_relaxed)) {
 		this->can_recv.store(false, std::memory_order_relaxed);
@@ -184,17 +184,22 @@ void Player::process_packet(void* buff)
 	}
 }
 
+#pragma optimize("", off)
 void Player::disconnect()
 {
-	this->recv_request = nullptr;
-	this->is_connected = false;
-	closesocket(this->socket);
+	if (this->is_connected.exchange(false)) {
+		delete this->recv_request->rio_buf;
+		delete this->recv_request;
+		this->recv_request = nullptr;
+		closesocket(this->socket);
 
-	this->curr_zone->msg_queue.emplace(zone_msg::PlayerLeave{ this->id });
-	for (int id : this->near_id) {
-		clients[id]->msg_queue.emplace(player_msg::PlayerLeaved{ this->id });
+		this->curr_zone->msg_queue.emplace(zone_msg::PlayerLeave{ this->id });
+		for (int id : this->near_id) {
+			clients[id]->msg_queue.emplace(player_msg::PlayerLeaved{ this->id });
+		}
 	}
 }
+#pragma optimize("", on)
 
 void Player::process_login(char* name)
 {

@@ -7,7 +7,7 @@ extern HANDLE g_iocp;
 
 bool Zone::check_is_player_disconnected(Player* p)
 {
-	if (p->is_connected == false) {
+	if (p->is_connected.load(std::memory_order_relaxed) == false) {
 		if (this->clients.erase(p->id) > 0) {
 			empty_ids.emplace(p->id, system_clock::now());
 			fprintf(stderr, "Player #%d has been disconnected\n", p->id);
