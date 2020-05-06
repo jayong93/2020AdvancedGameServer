@@ -31,7 +31,7 @@ std::array<Player*, client_limit> clients;
 
 int new_user_id = 0;
 
-RIORESULT results[10000];
+RIORESULT results[50000];
 void do_worker()
 {
 	for (auto i = 0; i < zones.size(); ++i) {
@@ -41,7 +41,7 @@ void do_worker()
 		clients[i]->do_rountine();
 	}
 
-	auto num_result = rio_ftable.RIODequeueCompletion(rio_cq, results, 10000);
+	auto num_result = rio_ftable.RIODequeueCompletion(rio_cq, results, 50000);
 	if (RIO_CORRUPT_CQ == num_result) {
 		fprintf(stderr, "RIODequeueCompletion error\n");
 		return;
