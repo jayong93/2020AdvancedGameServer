@@ -30,7 +30,7 @@ struct SOCKETINFO
 	bool is_connected;
 	bool is_active;
 	short x, y;
-	int seq_no;
+	int move_time;
 	set<int> near_id;
 	mutex near_lock;
 
@@ -63,6 +63,8 @@ void Disconnect(int id);
 void send_packet(int id, void *buff)
 {
 	auto client = clients[id];
+	if (client == nullptr)
+		return;
 	if (false == client->is_connected)
 		return;
 
@@ -130,7 +132,7 @@ void send_pos_packet(int client_id, int mover_id)
 	packet.type = SC_POS;
 	packet.x = mover->x;
 	packet.y = mover->y;
-	packet.seq_no = client->seq_no;
+	packet.move_time = client->move_time;
 
 	client->near_lock.lock();
 	if ((client_id == mover_id) || (0 != client->near_id.count(mover_id)))
@@ -179,8 +181,9 @@ void Disconnect(int id)
 	auto client = clients[id];
 	client->is_connected = false;
 	client->socket.close();
-	for (auto &cl : clients)
+	for (auto i = 0; i < new_user_id; ++i)
 	{
+		auto cl = clients[i];
 		if (true == cl->is_connected)
 			send_remove_object_packet(cl->id, id);
 	}
@@ -229,8 +232,9 @@ void ProcessMove(int id, unsigned char dir)
 	client->y = y;
 
 	set<int> new_vl;
-	for (auto &cl : clients)
+	for (auto i = 0; i < new_user_id; ++i)
 	{
+		auto cl = clients[i];
 		int other = cl->id;
 		if (id == other)
 			continue;
@@ -288,8 +292,9 @@ void ProcessLogin(int user_id, char *id_str)
 	client->is_connected = true;
 	send_login_ok_packet(user_id);
 
-	for (auto &cl : clients)
+	for (auto i = 0; i < new_user_id; ++i)
 	{
+		auto cl = clients[i];
 		int other_player = cl->id;
 		if (false == clients[other_player]->is_connected)
 			continue;
@@ -318,7 +323,7 @@ void ProcessPacket(int id, void *buff)
 	case CS_MOVE:
 	{
 		cs_packet_move *move_packet = reinterpret_cast<cs_packet_move *>(packet);
-		clients[id]->seq_no = move_packet->seq_no;
+		clients[id]->move_time = move_packet->move_time;
 		ProcessMove(id, move_packet->direction);
 	}
 	break;
@@ -355,27 +360,32 @@ void handle_send(const boost_error &error, const size_t length, SOCKETINFO *clie
 	}
 }
 
-void assemble_packet(SOCKETINFO* client, size_t received_bytes)
+void assemble_packet(SOCKETINFO *client, size_t received_bytes)
 {
-	char* p = client->recv_buf;
+	char *p = client->recv_buf;
 	auto remain = received_bytes;
 	unsigned packet_size;
 	unsigned prev_packet_size = client->prev_packet_size;
 	if (0 == prev_packet_size)
 		packet_size = 0;
-	else packet_size = p[0];
+	else
+		packet_size = p[0];
 
-	while (remain > 0) {
-		if (0 == packet_size) packet_size = p[0];
+	while (remain > 0)
+	{
+		if (0 == packet_size)
+			packet_size = p[0];
 		unsigned required = packet_size - prev_packet_size;
-		if (required <= remain) {
+		if (required <= remain)
+		{
 			ProcessPacket(client->id, p);
 			remain -= required;
 			p += packet_size;
 			prev_packet_size = 0;
 			packet_size = 0;
 		}
-		else {
+		else
+		{
 			memmove(client->recv_buf, p, remain);
 			prev_packet_size += remain;
 			break;
@@ -425,8 +435,9 @@ void handle_accept(const boost_error &error, tcp::socket &sock, tcp::acceptor &a
 	}
 	else
 	{
-		auto new_player = create_new_player(new_user_id++, sock);
+		auto new_player = create_new_player(new_user_id, sock);
 		clients[new_player->id] = new_player;
+		new_user_id += 1;
 
 		new_player->socket.async_read_some(buffer(new_player->recv_buf, MAX_BUFFER), [new_player](auto error, auto length) {
 			handle_recv(error, length, new_player);
@@ -438,7 +449,7 @@ void handle_accept(const boost_error &error, tcp::socket &sock, tcp::acceptor &a
 	});
 }
 
-int main()
+int main(int argc, char *argv[])
 {
 	try
 	{
