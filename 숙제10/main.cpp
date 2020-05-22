@@ -352,11 +352,9 @@ void handle_send(const boost_error &error, const size_t length, SOCKETINFO *clie
 	if (error)
 	{
 		cerr << "Error at send(client #" << client->id << "): " << error.message() << endl;
-		Disconnect(client->id);
 	}
 	else if (length == 0)
 	{
-		Disconnect(client->id);
 	}
 }
 
