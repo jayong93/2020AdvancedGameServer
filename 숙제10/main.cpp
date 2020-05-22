@@ -38,7 +38,8 @@ struct SOCKETINFO
 };
 
 SOCKETINFO *clients[MAX_USER_NUM];
-unsigned new_user_id = 0;
+atomic_uint new_user_id{0};
+atomic_uint total_player{0};
 
 void handle_send(const boost_error &error, size_t length, SOCKETINFO *client);
 
@@ -60,7 +61,8 @@ bool is_near(int a, int b)
 
 void Disconnect(int id);
 
-void send_packet(int id, void *buff)
+template <typename P, typename F>
+void send_packet(int id, F &&packet_maker_func)
 {
 	auto client = clients[id];
 	if (client == nullptr)
@@ -68,13 +70,10 @@ void send_packet(int id, void *buff)
 	if (false == client->is_connected)
 		return;
 
-	char *data = (char *)buff;
-	auto data_size = data[0];
+	P *packet = new P;
+	packet_maker_func(*packet);
 
-	char *packet = new char[data_size];
-	memcpy(packet, data, data_size);
-
-	client->socket.async_send(buffer(packet, data_size), [client, packet](auto error, auto length) {
+	client->socket.async_send(buffer(packet, sizeof(P)), [client, packet](auto error, auto length) {
 		delete packet;
 		handle_send(error, length, client);
 	});
@@ -83,38 +82,38 @@ void send_packet(int id, void *buff)
 void send_login_ok_packet(int id)
 {
 	auto client = clients[id];
-	sc_packet_login_ok packet;
-	packet.id = id;
-	packet.size = sizeof(packet);
-	packet.type = SC_LOGIN_OK;
-	packet.x = client->x;
-	packet.y = client->y;
-	packet.hp = 100;
-	packet.level = 1;
-	packet.exp = 1;
-	send_packet(id, &packet);
+	send_packet<sc_packet_login_ok>(id, [client, id](sc_packet_login_ok &packet) {
+		packet.id = id;
+		packet.size = sizeof(packet);
+		packet.type = SC_LOGIN_OK;
+		packet.x = client->x;
+		packet.y = client->y;
+		packet.hp = 100;
+		packet.level = 1;
+		packet.exp = 1;
+	});
 }
 
 void send_login_fail(int id)
 {
-	sc_packet_login_fail packet;
-	packet.size = sizeof(packet);
-	packet.type = SC_LOGIN_FAIL;
-	send_packet(id, &packet);
+	send_packet<sc_packet_login_fail>(id, [](sc_packet_login_fail &packet) {
+		packet.size = sizeof(packet);
+		packet.type = SC_LOGIN_FAIL;
+	});
 }
 
 void send_put_object_packet(int client_id, int new_id)
 {
 	auto client = clients[client_id];
 	auto new_client = clients[new_id];
-	sc_packet_put_object packet;
-	packet.id = new_id;
-	packet.size = sizeof(packet);
-	packet.type = SC_PUT_OBJECT;
-	packet.x = new_client->x;
-	packet.y = new_client->y;
-	packet.o_type = 1;
-	send_packet(client_id, &packet);
+	send_packet<sc_packet_put_object>(client_id, [new_id, new_client](sc_packet_put_object &packet) {
+		packet.id = new_id;
+		packet.size = sizeof(packet);
+		packet.type = SC_PUT_OBJECT;
+		packet.x = new_client->x;
+		packet.y = new_client->y;
+		packet.o_type = 1;
+	});
 
 	if (client_id == new_id)
 		return;
@@ -125,20 +124,20 @@ void send_put_object_packet(int client_id, int new_id)
 void send_pos_packet(int client_id, int mover_id)
 {
 	auto client = clients[client_id];
-	auto mover = clients[mover_id];
-	sc_packet_pos packet;
-	packet.id = mover_id;
-	packet.size = sizeof(packet);
-	packet.type = SC_POS;
-	packet.x = mover->x;
-	packet.y = mover->y;
-	packet.move_time = client->move_time;
 
 	client->near_lock.lock();
 	if ((client_id == mover_id) || (0 != client->near_id.count(mover_id)))
 	{
 		client->near_lock.unlock();
-		send_packet(client_id, &packet);
+		auto mover = clients[mover_id];
+		send_packet<sc_packet_pos>(client_id, [mover_id, mover, client](sc_packet_pos &packet) {
+			packet.id = mover_id;
+			packet.size = sizeof(packet);
+			packet.type = SC_POS;
+			packet.x = mover->x;
+			packet.y = mover->y;
+			packet.move_time = client->move_time;
+		});
 	}
 	else
 	{
@@ -150,10 +149,11 @@ void send_pos_packet(int client_id, int mover_id)
 void send_remove_object_packet(int client_id, int leaver)
 {
 	sc_packet_remove_object packet;
-	packet.id = leaver;
-	packet.size = sizeof(packet);
-	packet.type = SC_REMOVE_OBJECT;
-	send_packet(client_id, &packet);
+	send_packet<sc_packet_remove_object>(client_id, [leaver](sc_packet_remove_object &packet) {
+		packet.id = leaver;
+		packet.size = sizeof(packet);
+		packet.type = SC_REMOVE_OBJECT;
+	});
 
 	auto client = clients[client_id];
 	lock_guard<mutex> lg{client->near_lock};
@@ -163,10 +163,11 @@ void send_remove_object_packet(int client_id, int leaver)
 void send_chat_packet(int client, int teller, char *mess)
 {
 	sc_packet_chat packet;
-	packet.id = teller;
-	packet.size = sizeof(packet);
-	packet.type = SC_CHAT;
-	send_packet(client, &packet);
+	send_packet<sc_packet_chat>(client, [teller](sc_packet_chat &packet) {
+		packet.id = teller;
+		packet.size = sizeof(packet);
+		packet.type = SC_CHAT;
+	});
 }
 
 bool is_near_id(int player, int other)
@@ -181,7 +182,7 @@ void Disconnect(int id)
 	auto client = clients[id];
 	client->is_connected = false;
 	client->socket.close();
-	for (auto i = 0; i < new_user_id; ++i)
+	for (auto i = 0; i < total_player.load(memory_order_relaxed); ++i)
 	{
 		auto cl = clients[i];
 		if (true == cl->is_connected)
@@ -232,7 +233,7 @@ void ProcessMove(int id, unsigned char dir)
 	client->y = y;
 
 	set<int> new_vl;
-	for (auto i = 0; i < new_user_id; ++i)
+	for (auto i = 0; i < total_player.load(memory_order_relaxed); ++i)
 	{
 		auto cl = clients[i];
 		int other = cl->id;
@@ -292,7 +293,7 @@ void ProcessLogin(int user_id, char *id_str)
 	client->is_connected = true;
 	send_login_ok_packet(user_id);
 
-	for (auto i = 0; i < new_user_id; ++i)
+	for (auto i = 0; i < total_player.load(memory_order_relaxed); ++i)
 	{
 		auto cl = clients[i];
 		int other_player = cl->id;
@@ -433,9 +434,9 @@ void handle_accept(const boost_error &error, tcp::socket &sock, tcp::acceptor &a
 	}
 	else
 	{
-		auto new_player = create_new_player(new_user_id, sock);
+		auto new_player = create_new_player(new_user_id.fetch_add(1, memory_order_relaxed), sock);
 		clients[new_player->id] = new_player;
-		new_user_id += 1;
+		total_player.fetch_add(1, memory_order_relaxed);
 
 		new_player->socket.async_read_some(buffer(new_player->recv_buf, MAX_BUFFER), [new_player](auto error, auto length) {
 			handle_recv(error, length, new_player);
