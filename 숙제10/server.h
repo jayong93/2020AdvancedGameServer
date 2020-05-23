@@ -17,16 +17,15 @@ struct SOCKETINFO
     char recv_buf[MAX_BUFFER];
     size_t prev_packet_size;
     tcp::socket socket;
+    tcp::socket& other_server_socket;
     unsigned id;
     string name;
 
     bool is_proxy;
     short x, y;
     int move_time;
-    set<int> near_id;
-    mutex near_lock;
 
-    SOCKETINFO(unsigned id, tcp::socket &&sock) : id{id}, socket{move(sock)} {}
+    SOCKETINFO(unsigned id, tcp::socket&& sock, tcp::socket& other_socket) : id{ id }, socket{ move(sock) }, other_server_socket{ other_socket } {}
 };
 
 struct ClientSlot
@@ -38,6 +37,12 @@ struct ClientSlot
     {
         return is_active.load(memory_order_acquire);
     }
+
+    template <typename F>
+    auto then(F&& func) { if (*this) { return func(*(this->ptr)); } }
+
+    template <typename F, typename F2>
+    auto then_else(F&& func, F2&& func2) { if (*this) { return func(*(this->ptr)); } else { return func2(); } }
 };
 class Server
 {
@@ -48,6 +53,9 @@ private:
     void process_packet(int id, void *buff);
     void process_packet_from_server(char *buff, size_t length);
     void acquire_new_id(unsigned new_id);
+    void ProcessLogin(int user_id, char* id_str);
+    void ProcessChat(int id, char* mess);
+    void ProcessMove(int id, unsigned char dir, unsigned move_time);
 
     void disconnect(unsigned id);
 
@@ -60,6 +68,8 @@ private:
 
     char server_recv_buf[MAX_BUFFER];
     size_t prev_packet_len{0};
+
+    SOCKETINFO dummy_proxy;
 
 public:
     Server(unsigned server_id);

@@ -7,38 +7,23 @@
 
 using namespace std;
 
-constexpr auto VIEW_RANGE = 7;
 constexpr unsigned MAX_USER_NUM = 20000;
+constexpr unsigned INVALID_ID = -1;
 
 static ClientSlot clients[MAX_USER_NUM];
 static atomic_uint new_user_id{0};
 
 pair<unsigned, unsigned> make_random_position(unsigned server_id)
 {
-    return pair(fast_rand() % WORLD_WIDTH, fast_rand() % WORLD_HEIGHT);
+    return pair(fast_rand() % WORLD_WIDTH, server_id * (WORLD_HEIGHT/2) + (fast_rand() % (WORLD_HEIGHT/2)));
 }
 
-void handle_send(const boost_error &error, const size_t length, SOCKETINFO &client)
+void handle_send(const boost_error &error, const size_t length)
 {
     if (error)
     {
-        cerr << "Error at send(client #" << client.id << "): " << error.message() << endl;
+        cerr << "Error at send: " << error.message() << endl;
     }
-}
-
-bool is_near(int a, int b)
-{
-    auto &client_a = clients[a];
-    auto &client_b = clients[b];
-    if (!client_a)
-        return false;
-    if (!client_b)
-        return false;
-    if (VIEW_RANGE < abs(client_a.ptr->x - client_b.ptr->x))
-        return false;
-    if (VIEW_RANGE < abs(client_a.ptr->y - client_b.ptr->y))
-        return false;
-    return true;
 }
 
 template <typename F>
@@ -81,29 +66,34 @@ void send_packet(int id, F &&packet_maker_func)
     if (!client_slot)
         return;
 
-    send_packet<P>(*client_slot.ptr, move(packet_maker_func));
+    send_packet<P>(client_slot.ptr->socket, move(packet_maker_func));
 }
 
 template <typename P, typename F>
-void send_packet(SOCKETINFO &client, F &&packet_maker_func)
+void send_packet(tcp::socket &client, F &&packet_maker_func)
 {
     P *packet = new P;
     packet_maker_func(*packet);
 
-    client.socket.async_send(buffer(packet, sizeof(P)), [&client, packet](auto error, auto length) {
+    client.async_send(buffer(packet, sizeof(P)), [packet](auto error, auto length) {
         delete packet;
-        handle_send(error, length, client);
+        handle_send(error, length);
     });
 }
 
 template <typename P, typename F>
-void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func)
+void send_packet_to_server(tcp::socket &sock, unsigned target_id, F &&packet_maker_func)
 {
-    P *packet = new P;
+    constexpr auto total_size = sizeof(P) + sizeof(char) + sizeof(unsigned);
+    char *buf = new char[total_size];
+    buf[0] = total_size;
+    *(unsigned*)(buf + 1) = target_id;
+
+    P* packet = (P*)(buf + 1 + sizeof(unsigned));
     packet_maker_func(*packet);
 
-    sock.async_send(buffer(packet, sizeof(P)), [packet](auto error, auto length) {
-        delete packet;
+    sock.async_send(buffer(buf, total_size), [buf](auto error, auto length) {
+        delete[] buf;
         if (error)
         {
             cerr << "Error at send to server : " << error.message() << endl;
@@ -111,120 +101,100 @@ void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func)
     });
 }
 
-void send_login_ok_packet(int id)
+void send_login_ok_packet(SOCKETINFO& client, unsigned id)
 {
-    auto &client = clients[id];
-    if (!client)
-        return;
-    send_packet<sc_packet_login_ok>(id, [&client, id](sc_packet_login_ok &packet) {
+    auto maker = [&client, id](sc_packet_login_ok& packet) {
         packet.id = id;
         packet.size = sizeof(packet);
         packet.type = SC_LOGIN_OK;
-        packet.x = client.ptr->x;
-        packet.y = client.ptr->y;
+        packet.x = client.x;
+        packet.y = client.y;
         packet.hp = 100;
         packet.level = 1;
         packet.exp = 1;
-    });
+    };
+    if (!client.is_proxy)
+        send_packet<sc_packet_login_ok>(client.socket, maker);
+    else
+        send_packet_to_server<sc_packet_login_ok>(client.other_server_socket, id, maker);
 }
 
-void send_login_fail(int id)
+void send_login_fail(tcp::socket& sock)
 {
-    send_packet<sc_packet_login_fail>(id, [](sc_packet_login_fail &packet) {
+    send_packet<sc_packet_login_fail>(sock, [](sc_packet_login_fail &packet) {
         packet.size = sizeof(packet);
         packet.type = SC_LOGIN_FAIL;
     });
 }
 
-void send_put_object_packet(int client_id, int new_id)
+void send_put_object_packet(SOCKETINFO& client, SOCKETINFO& new_client)
 {
-    auto &client = clients[client_id];
-    auto &new_client = clients[new_id];
-    if (!client || !new_client)
-        return;
-    send_packet<sc_packet_put_object>(client_id, [new_id, &new_client](sc_packet_put_object &packet) {
-        packet.id = new_id;
+    auto maker = [&new_client](sc_packet_put_object &packet) {
+        packet.id = new_client.id;
         packet.size = sizeof(packet);
         packet.type = SC_PUT_OBJECT;
-        packet.x = new_client.ptr->x;
-        packet.y = new_client.ptr->y;
+        packet.x = new_client.x;
+        packet.y = new_client.y;
         packet.o_type = 1;
-    });
-
-    if (client_id == new_id)
-        return;
-    lock_guard<mutex> lg{client.ptr->near_lock};
-    client.ptr->near_id.insert(new_id);
+    };
+    if (!client.is_proxy) {
+        send_packet<sc_packet_put_object>(client.socket, maker);
+    }
+    else {
+        send_packet_to_server<sc_packet_put_object>(client.other_server_socket, client.id, maker);
+    }
 }
 
-void send_pos_packet(int client_id, int mover_id)
+void send_pos_packet(SOCKETINFO& client, SOCKETINFO& mover)
 {
-    auto &client_slot = clients[client_id];
-    auto &mover_slot = clients[mover_id];
-    if (!client_slot || !mover_slot)
-        return;
-    auto client = client_slot.ptr.get();
-
-    client->near_lock.lock();
-    if ((client_id == mover_id) || (0 != client->near_id.count(mover_id)))
-    {
-        client->near_lock.unlock();
-        auto mover = mover_slot.ptr.get();
-        send_packet<sc_packet_pos>(client_id, [mover_id, mover, client](sc_packet_pos &packet) {
-            packet.id = mover_id;
-            packet.size = sizeof(packet);
-            packet.type = SC_POS;
-            packet.x = mover->x;
-            packet.y = mover->y;
-            packet.move_time = client->move_time;
-        });
+    auto maker = [&mover, &client](sc_packet_pos& packet) {
+			packet.id = mover.id;
+			packet.size = sizeof(packet);
+			packet.type = SC_POS;
+			packet.x = mover.x;
+			packet.y = mover.y;
+			packet.move_time = client.move_time;
+		};
+    if (!client.is_proxy) {
+		send_packet<sc_packet_pos>(client.socket, maker);
     }
     else
     {
-        client->near_lock.unlock();
-        send_put_object_packet(client_id, mover_id);
+        send_packet_to_server<sc_packet_pos>(client.other_server_socket, client.id, maker);
     }
 }
 
-void send_remove_object_packet(int client_id, int leaver)
+void send_remove_object_packet(SOCKETINFO& client, SOCKETINFO& leaver)
 {
-    auto &client_slot = clients[client_id];
-    if (!client_slot)
-        return;
-
-    sc_packet_remove_object packet;
-    send_packet<sc_packet_remove_object>(client_id, [leaver](sc_packet_remove_object &packet) {
-        packet.id = leaver;
+    auto maker = [&leaver](sc_packet_remove_object &packet) {
+        packet.id = leaver.id;
         packet.size = sizeof(packet);
         packet.type = SC_REMOVE_OBJECT;
-    });
+    };
 
-    auto client = client_slot.ptr.get();
-    lock_guard<mutex> lg{client->near_lock};
-    client->near_id.erase(leaver);
+    if (!client.is_proxy) {
+        send_packet<sc_packet_remove_object>(client.socket, maker);
+    }
+    else {
+        send_packet_to_server<sc_packet_remove_object>(client.other_server_socket, client.id, maker);
+    }
 }
 
-void send_chat_packet(int client, int teller, char *mess)
+void send_chat_packet(SOCKETINFO& client, int teller, char *mess)
 {
-    sc_packet_chat packet;
-    send_packet<sc_packet_chat>(client, [teller](sc_packet_chat &packet) {
+    auto maker = [teller, mess](sc_packet_chat &packet) {
         packet.id = teller;
         packet.size = sizeof(packet);
         packet.type = SC_CHAT;
-    });
+        strcpy(packet.chat, mess);
+    };
+    if (!client.is_proxy)
+        send_packet<sc_packet_chat>(client.socket, maker);
+    else
+        send_packet_to_server<sc_packet_chat>(client.other_server_socket, client.id, maker);
 }
 
-bool is_near_id(int player, int other)
-{
-    auto &client_slot = clients[player];
-    if (!client_slot)
-        return false;
-
-    auto &client = client_slot.ptr;
-    lock_guard<mutex> gl{client->near_lock};
-    return (0 != client->near_id.count(other));
-}
-void ProcessMove(int id, unsigned char dir, unsigned move_time)
+void Server::ProcessMove(int id, unsigned char dir, unsigned move_time)
 {
     auto &client_slot = clients[id];
     if (!client_slot)
@@ -236,9 +206,6 @@ void ProcessMove(int id, unsigned char dir, unsigned move_time)
 
     short x = client->x;
     short y = client->y;
-    client->near_lock.lock();
-    auto old_vl = client->near_id;
-    client->near_lock.unlock();
     switch (dir)
     {
     case D_UP:
@@ -273,61 +240,31 @@ void ProcessMove(int id, unsigned char dir, unsigned move_time)
     client->x = x;
     client->y = y;
 
-    set<int> new_vl;
     for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
-        auto &client_slot = clients[i];
-        if (!client_slot)
-            continue;
-        auto &cl = client_slot.ptr;
-        int other = cl->id;
-        if (id == other)
-            continue;
-        if (!clients[other])
-            continue;
-        if (true == is_near(id, other))
-            new_vl.insert(other);
+        clients[i].then([&client](auto& cl) {
+            send_pos_packet(cl, *client);
+        });
     }
-
-    send_pos_packet(id, id);
-    for (auto cl : old_vl)
-    {
-        if (0 != new_vl.count(cl))
-        {
-            send_pos_packet(cl, id);
-        }
-        else
-        {
-            send_remove_object_packet(id, cl);
-            send_remove_object_packet(cl, id);
-        }
-    }
-    for (auto cl : new_vl)
-    {
-        if (0 == old_vl.count(cl))
-        {
-            send_put_object_packet(id, cl);
-            send_put_object_packet(cl, id);
-        }
-    }
+    send_pos_packet(dummy_proxy, *client);
 }
 
-void ProcessChat(int id, char *mess)
+void Server::ProcessChat(int id, char *mess)
 {
     auto &client_slot = clients[id];
     if (!client_slot)
         return;
     auto &client = client_slot.ptr;
 
-    client->near_lock.lock();
-    auto vl = client->near_id;
-    client->near_lock.unlock();
-
-    for (auto cl : vl)
-        send_chat_packet(cl, id, mess);
+    for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
+    {
+        clients[i].then([&client, id, mess](auto& other) {
+			send_chat_packet(other, id, mess);
+		});
+    }
 }
 
-void ProcessLogin(int user_id, char *id_str)
+void Server::ProcessLogin(int user_id, char *id_str)
 {
     //for (auto cl : clients) {
     //	if (0 == strcmp(cl.second->name, id_str)) {
@@ -341,32 +278,24 @@ void ProcessLogin(int user_id, char *id_str)
 
     client->name = id_str;
     client_slot.is_active.store(true, memory_order_release);
-    send_login_ok_packet(user_id);
+    send_login_ok_packet(*client, user_id);
+    send_login_ok_packet(dummy_proxy, user_id);
 
     for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
-        auto &client_slot = clients[i];
-        if (!client_slot)
-            continue;
-        auto &cl = client_slot.ptr;
-
-        int other_player = cl->id;
-        if (!clients[other_player])
-            continue;
-        if (true == is_near(other_player, user_id))
-        {
-            send_put_object_packet(other_player, user_id);
-            if (other_player != user_id)
-            {
-                send_put_object_packet(user_id, other_player);
-            }
-        }
+        clients[i].then([&client](auto& other) {
+			send_put_object_packet(other, *client);
+			if (other.id != client->id)
+			{
+				send_put_object_packet(*client, other);
+			}
+		});
     }
 }
 
-SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y, bool is_proxy)
+SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, tcp::socket &other_server_sock, short x, short y, bool is_proxy)
 {
-    SOCKETINFO *new_player = new SOCKETINFO{id, move(sock)};
+    SOCKETINFO *new_player = new SOCKETINFO{id, move(sock), other_server_sock};
     new_player->prev_packet_size = 0;
     new_player->x = x;
     new_player->y = y;
@@ -375,10 +304,10 @@ SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y,
     return new_player;
 }
 
-SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, bool is_proxy)
+SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, tcp::socket& other_server_sock, bool is_proxy, unsigned server_id)
 {
-    auto [new_x, new_y] = make_random_position(0);
-    return create_new_player(id, move(sock), new_x, new_y, is_proxy);
+    auto [new_x, new_y] = make_random_position(server_id);
+    return create_new_player(id, move(sock), other_server_sock, new_x, new_y, is_proxy);
 }
 
 void Server::handle_recv(const boost_error &error, const size_t length, SOCKETINFO *client)
@@ -402,8 +331,9 @@ void Server::handle_recv(const boost_error &error, const size_t length, SOCKETIN
     }
 }
 
-Server::Server(unsigned server_id) : server_id{server_id}, context{}, acceptor{context, tcp::endpoint(tcp::v4(), SERVER_PORT + server_id)}, server_acceptor{context, tcp::endpoint(tcp::v4(), SERVER_PORT + 10)}, other_server_sock{context}, pending_client_sock{context}
+Server::Server(unsigned server_id) : server_id{ server_id }, context{}, acceptor{ context, tcp::endpoint(tcp::v4(), SERVER_PORT + server_id) }, server_acceptor{ context, tcp::endpoint(tcp::v4(), SERVER_PORT + 10) }, other_server_sock{ context }, pending_client_sock{ context }, dummy_proxy{ INVALID_ID, tcp::socket{context}, other_server_sock }
 {
+    dummy_proxy.is_proxy = true;
 }
 
 void Server::run()
@@ -422,6 +352,10 @@ void Server::run()
     if (server_id == 0)
     {
         server_acceptor.async_accept(other_server_sock, [this](boost_error error) {
+            if (error) {
+                cerr << "Can't accept other server(cause : " << error.message() << ")" << endl;
+                return;
+            }
             other_server_sock.async_read_some(buffer(server_recv_buf, MAX_BUFFER), [this](auto &error, auto length) {
                 handle_recv_from_server(error, length);
             });
@@ -430,7 +364,11 @@ void Server::run()
     else
     {
         auto server_addr = ip::make_address_v4("127.0.0.1");
-        other_server_sock.async_connect(tcp::endpoint{server_addr, SERVER_PORT + server_id}, [this](auto &error) {
+        other_server_sock.async_connect(tcp::endpoint{server_addr, unsigned short(SERVER_PORT + 10)}, [this](auto &error) {
+            if (error) {
+                cerr << "Can't connect to other server(cause : " << error.message() << ")" << endl;
+                return;
+            }
             other_server_sock.async_read_some(buffer(server_recv_buf, MAX_BUFFER), [this](auto &error, auto length) {
                 handle_recv_from_server(error, length);
             });
@@ -443,7 +381,7 @@ void Server::run()
 
 void Server::handle_accept(tcp::socket &&sock, unsigned user_id)
 {
-    auto new_player = create_new_player(user_id, move(sock), false);
+    auto new_player = create_new_player(user_id, move(sock), other_server_sock, false, server_id);
     auto &slot = clients[new_player->id];
     slot.ptr.reset(new_player);
     slot.is_active.store(true, memory_order_release);
@@ -465,17 +403,15 @@ void Server::disconnect(unsigned id)
     auto &client_slot = clients[id];
     if (!client_slot)
         return;
-    client_slot.is_active.store(true, memory_order_relaxed);
+    client_slot.is_active.store(false, memory_order_relaxed);
     auto &client = client_slot.ptr;
 
     client->socket.close();
     for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
-        auto &client_slot = clients[i];
-        if (!client_slot)
-            continue;
-        auto &cl = client_slot.ptr;
-        send_remove_object_packet(cl->id, id);
+        clients[i].then([&client](auto& other) {
+            send_remove_object_packet(other, *client);
+		});
     }
 }
 
@@ -534,12 +470,13 @@ void Server::process_packet(int id, void *buff)
 
 void Server::process_packet_from_server(char *buff, size_t length)
 {
-    switch (buff[1])
+    char* raw_message = buff + 1 + sizeof(unsigned);
+	switch (raw_message[1])
     {
     case SC_LOGIN_OK:
     {
-        sc_packet_login_ok *login_packet = reinterpret_cast<sc_packet_login_ok *>(buff);
-        auto new_player = create_new_player(login_packet->id, tcp::socket{context}, login_packet->x, login_packet->y, true);
+        sc_packet_login_ok *login_packet = reinterpret_cast<sc_packet_login_ok *>(raw_message);
+        auto new_player = create_new_player(login_packet->id, tcp::socket{context}, other_server_sock, login_packet->x, login_packet->y, true);
         auto &client_slot = clients[new_player->id];
         client_slot.ptr.reset(new_player);
         client_slot.is_active.store(true, memory_order_release);
@@ -551,20 +488,22 @@ void Server::process_packet_from_server(char *buff, size_t length)
         }
     }
     break;
+    case SC_LOGIN_FAIL:
+        break;
     case SS_ID_ACQUIRE:
     {
-        ss_packet_id_acquire *id_acq_packet = reinterpret_cast<ss_packet_id_acquire *>(buff);
+        ss_packet_id_acquire *id_acq_packet = reinterpret_cast<ss_packet_id_acquire *>(raw_message);
         if (id_acq_packet->desire_id >= new_user_id)
         {
             new_user_id.store(id_acq_packet->desire_id + 1, memory_order_relaxed);
-            send_packet_to_server<ss_packet_id_response_ok>(other_server_sock, [](ss_packet_id_response_ok &packet) {
+            send_packet_to_server<ss_packet_id_response_ok>(other_server_sock, INVALID_ID, [](ss_packet_id_response_ok &packet) {
                 packet.size = sizeof(packet);
                 packet.type = SS_ID_RESPONSE_OK;
             });
         }
         else
         {
-            send_packet_to_server<ss_packet_id_response_fail>(other_server_sock, [](ss_packet_id_response_fail &packet) {
+            send_packet_to_server<ss_packet_id_response_fail>(other_server_sock, INVALID_ID, [](ss_packet_id_response_fail &packet) {
                 packet.size = sizeof(packet);
                 packet.type = SS_ID_RESPONSE_FAIL;
                 packet.available_min_id = new_user_id.load(memory_order_relaxed);
@@ -579,35 +518,65 @@ void Server::process_packet_from_server(char *buff, size_t length)
     break;
     case SS_ID_RESPONSE_FAIL:
     {
-        ss_packet_id_response_fail *id_acq_packet = reinterpret_cast<ss_packet_id_response_fail *>(buff);
+        ss_packet_id_response_fail *id_acq_packet = reinterpret_cast<ss_packet_id_response_fail *>(raw_message);
         if (id_acq_packet->available_min_id > new_user_id.load(memory_order_relaxed))
             new_user_id.store(id_acq_packet->available_min_id, memory_order_relaxed);
         acquire_new_id(new_user_id.load(memory_order_relaxed));
     }
     break;
     default:
-        for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
+    {
+        unsigned target_id = *(unsigned*)(buff + 1);
+        if (target_id == INVALID_ID)
         {
-            auto &slot = clients[i];
-            if (!slot)
-                continue;
-
-            if (!slot.ptr->is_proxy)
-            {
-                char *buf = new char[length];
-                auto &client = *slot.ptr;
-                slot.ptr->socket.async_send(buffer(buf, length), [buf, &client](auto error, auto length) {
-                    delete buf;
-                    handle_send(error, length, client);
-                });
-            }
+			switch (raw_message[1]) {
+			case SC_POS:
+			{
+				sc_packet_pos* p = (sc_packet_pos*)raw_message;
+				clients[p->id].then([p](auto& cl) {
+					cl.x = p->x;
+					cl.y = p->y;
+				});
+			}
+				break;
+			case SC_PUT_OBJECT:
+			{
+				sc_packet_put_object* p = (sc_packet_put_object*)raw_message;
+				clients[p->id].then([p](auto& cl) {
+					cl.x = p->x;
+					cl.y = p->y;
+				});
+			}
+			break;
+			case SC_REMOVE_OBJECT:
+			{
+				sc_packet_remove_object* p = (sc_packet_remove_object*)raw_message;
+				if (clients[p->id].is_active.load(memory_order_acquire))
+					clients[p->id].is_active.store(false, memory_order_release);
+			}
+			break;
+			}
         }
+        else {
+			clients[target_id].then([raw_message](auto& cl) {
+				tcp::socket& sock = cl.socket;
+				const auto packet_size = raw_message[0];
+				char* packet = new char[packet_size];
+				memcpy(packet, raw_message, packet_size);
+				sock.async_send(buffer(packet, packet_size), [packet](auto error, auto length) {
+					delete[] packet;
+					handle_send(error, length);
+				});
+			});
+		}
+        
+    }
     }
 }
 
 void Server::acquire_new_id(unsigned new_id)
 {
-    send_packet_to_server<ss_packet_id_acquire>(other_server_sock, [new_id](ss_packet_id_acquire &packet) {
+    send_packet_to_server<ss_packet_id_acquire>(other_server_sock, INVALID_ID, [new_id](ss_packet_id_acquire &packet) {
         packet.size = sizeof(packet);
         packet.type = SS_ID_ACQUIRE;
         packet.desire_id = new_id;

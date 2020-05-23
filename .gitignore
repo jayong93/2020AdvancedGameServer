@@ -1,7 +1,7 @@
 **/.vs/*
 **/Debug/*
 **/Release/*
-/숙제4/packages
+**/packages/*
 /A_GameServer
 /HW3/Simple2DClient/Simple2DClient
 /숙제2/Simple2DClient/Simple2DClient
