@@ -50,7 +50,7 @@ struct ss_packet_id_response_fail
 {
 	char size;
 	char type;
-	unsigned available_max_id;
+	unsigned available_min_id;
 };
 
 struct sc_packet_login_ok

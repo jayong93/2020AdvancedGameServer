@@ -18,6 +18,7 @@ int main(int argc, char *argv[])
 {
 	try
 	{
+		cout << "Give a server id : ";
 		unsigned server_id;
 		cin >> server_id;
 

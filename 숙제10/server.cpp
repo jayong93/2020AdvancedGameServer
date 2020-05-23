@@ -12,18 +12,17 @@ constexpr unsigned MAX_USER_NUM = 20000;
 
 static ClientSlot clients[MAX_USER_NUM];
 static atomic_uint new_user_id{0};
-static atomic_uint total_player{0};
 
 pair<unsigned, unsigned> make_random_position(unsigned server_id)
 {
     return pair(fast_rand() % WORLD_WIDTH, fast_rand() % WORLD_HEIGHT);
 }
 
-void handle_send(const boost_error &error, const size_t length, ClientSlot &client_slot)
+void handle_send(const boost_error &error, const size_t length, SOCKETINFO &client)
 {
-    if (error && client_slot)
+    if (error)
     {
-        cerr << "Error at send(client #" << client_slot.ptr->id << "): " << error.message() << endl;
+        cerr << "Error at send(client #" << client.id << "): " << error.message() << endl;
     }
 }
 
@@ -82,12 +81,18 @@ void send_packet(int id, F &&packet_maker_func)
     if (!client_slot)
         return;
 
+    send_packet<P>(*client_slot.ptr, move(packet_maker_func));
+}
+
+template <typename P, typename F>
+void send_packet(SOCKETINFO &client, F &&packet_maker_func)
+{
     P *packet = new P;
     packet_maker_func(*packet);
 
-    client_slot.ptr->socket.async_send(buffer(packet, sizeof(P)), [&client_slot, packet](auto error, auto length) {
+    client.socket.async_send(buffer(packet, sizeof(P)), [&client, packet](auto error, auto length) {
         delete packet;
-        handle_send(error, length, client_slot);
+        handle_send(error, length, client);
     });
 }
 
@@ -213,7 +218,7 @@ bool is_near_id(int player, int other)
 {
     auto &client_slot = clients[player];
     if (!client_slot)
-        return;
+        return false;
 
     auto &client = client_slot.ptr;
     lock_guard<mutex> gl{client->near_lock};
@@ -269,7 +274,7 @@ void ProcessMove(int id, unsigned char dir, unsigned move_time)
     client->y = y;
 
     set<int> new_vl;
-    for (auto i = 0; i < total_player.load(memory_order_relaxed); ++i)
+    for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
         auto &client_slot = clients[i];
         if (!client_slot)
@@ -338,7 +343,7 @@ void ProcessLogin(int user_id, char *id_str)
     client_slot.is_active.store(true, memory_order_release);
     send_login_ok_packet(user_id);
 
-    for (auto i = 0; i < total_player.load(memory_order_relaxed); ++i)
+    for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
         auto &client_slot = clients[i];
         if (!client_slot)
@@ -359,7 +364,7 @@ void ProcessLogin(int user_id, char *id_str)
     }
 }
 
-SOCKETINFO *create_new_player(unsigned id, tcp::socket &sock, short x, short y, bool is_proxy)
+SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y, bool is_proxy)
 {
     SOCKETINFO *new_player = new SOCKETINFO{id, move(sock)};
     new_player->prev_packet_size = 0;
@@ -370,10 +375,10 @@ SOCKETINFO *create_new_player(unsigned id, tcp::socket &sock, short x, short y, 
     return new_player;
 }
 
-SOCKETINFO *create_new_player(unsigned id, tcp::socket &sock, bool is_proxy)
+SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, bool is_proxy)
 {
     auto [new_x, new_y] = make_random_position(0);
-    return create_new_player(id, sock, new_x, new_y, is_proxy);
+    return create_new_player(id, move(sock), new_x, new_y, is_proxy);
 }
 
 void Server::handle_recv(const boost_error &error, const size_t length, SOCKETINFO *client)
@@ -438,16 +443,20 @@ void Server::run()
 
 void Server::handle_accept(tcp::socket &&sock, unsigned user_id)
 {
-    auto new_player = create_new_player(new_user_id.fetch_add(1, memory_order_relaxed), sock, false);
-    clients[new_player->id] = new_player;
-    total_player.fetch_add(1, memory_order_relaxed);
+    auto new_player = create_new_player(user_id, move(sock), false);
+    auto &slot = clients[new_player->id];
+    slot.ptr.reset(new_player);
+    slot.is_active.store(true, memory_order_release);
 
     new_player->socket.async_read_some(buffer(new_player->recv_buf, MAX_BUFFER), [new_player, this](auto error, auto length) {
         handle_recv(error, length, new_player);
     });
 
-    acceptor.async_accept([this](auto error, auto sock) {
-        handle_accept(error, sock, acceptor, server_id);
+    acceptor.async_accept(pending_client_sock, [this](auto error) {
+        if (error)
+            cerr << "Error at accept: " << error.message() << endl;
+        else
+            acquire_new_id(new_user_id.load(memory_order_relaxed));
     });
 }
 
@@ -460,7 +469,7 @@ void Server::disconnect(unsigned id)
     auto &client = client_slot.ptr;
 
     client->socket.close();
-    for (auto i = 0; i < total_player.load(memory_order_relaxed); ++i)
+    for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
         auto &client_slot = clients[i];
         if (!client_slot)
@@ -530,7 +539,7 @@ void Server::process_packet_from_server(char *buff, size_t length)
     case SC_LOGIN_OK:
     {
         sc_packet_login_ok *login_packet = reinterpret_cast<sc_packet_login_ok *>(buff);
-        auto new_player = create_new_player(login_packet->id, other_server_sock, login_packet->x, login_packet->y, true);
+        auto new_player = create_new_player(login_packet->id, tcp::socket{context}, login_packet->x, login_packet->y, true);
         auto &client_slot = clients[new_player->id];
         client_slot.ptr.reset(new_player);
         client_slot.is_active.store(true, memory_order_release);
@@ -558,26 +567,49 @@ void Server::process_packet_from_server(char *buff, size_t length)
             send_packet_to_server<ss_packet_id_response_fail>(other_server_sock, [](ss_packet_id_response_fail &packet) {
                 packet.size = sizeof(packet);
                 packet.type = SS_ID_RESPONSE_FAIL;
-                packet.available_max_id = new_user_id.load(memory_order_relaxed);
+                packet.available_min_id = new_user_id.load(memory_order_relaxed);
             });
         }
     }
     break;
     case SS_ID_RESPONSE_OK:
     {
-        handle_accept(move(pending_client_sock), )
+        handle_accept(move(pending_client_sock), new_user_id.fetch_add(1, memory_order_relaxed));
     }
     break;
     case SS_ID_RESPONSE_FAIL:
     {
         ss_packet_id_response_fail *id_acq_packet = reinterpret_cast<ss_packet_id_response_fail *>(buff);
-        new_user_id.store(id_acq_packet->available_max_id, memory_order_relaxed);
-        acquire_new_id(id_acq_packet->available_max_id);
+        if (id_acq_packet->available_min_id > new_user_id.load(memory_order_relaxed))
+            new_user_id.store(id_acq_packet->available_min_id, memory_order_relaxed);
+        acquire_new_id(new_user_id.load(memory_order_relaxed));
     }
     break;
+    default:
+        for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
+        {
+            auto &slot = clients[i];
+            if (!slot)
+                continue;
+
+            if (!slot.ptr->is_proxy)
+            {
+                char *buf = new char[length];
+                auto &client = *slot.ptr;
+                slot.ptr->socket.async_send(buffer(buf, length), [buf, &client](auto error, auto length) {
+                    delete buf;
+                    handle_send(error, length, client);
+                });
+            }
+        }
     }
 }
 
 void Server::acquire_new_id(unsigned new_id)
 {
+    send_packet_to_server<ss_packet_id_acquire>(other_server_sock, [new_id](ss_packet_id_acquire &packet) {
+        packet.size = sizeof(packet);
+        packet.type = SS_ID_ACQUIRE;
+        packet.desire_id = new_id;
+    });
 }

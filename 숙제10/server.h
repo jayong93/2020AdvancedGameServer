@@ -12,17 +12,6 @@ using namespace boost::asio;
 using namespace boost::asio::ip;
 using boost_error = boost::system::error_code;
 
-struct ClientSlot
-{
-    atomic_bool is_active;
-    unique_ptr<SOCKETINFO> ptr;
-
-    operator bool() const
-    {
-        return is_active.load(memory_order_acquire);
-    }
-};
-
 struct SOCKETINFO
 {
     char recv_buf[MAX_BUFFER];
@@ -40,6 +29,16 @@ struct SOCKETINFO
     SOCKETINFO(unsigned id, tcp::socket &&sock) : id{id}, socket{move(sock)} {}
 };
 
+struct ClientSlot
+{
+    atomic_bool is_active;
+    unique_ptr<SOCKETINFO> ptr;
+
+    operator bool() const
+    {
+        return is_active.load(memory_order_acquire);
+    }
+};
 class Server
 {
 private:
