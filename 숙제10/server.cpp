@@ -240,13 +240,13 @@ void Server::ProcessMove(int id, unsigned char dir, unsigned move_time)
     client->x = x;
     client->y = y;
 
+    send_pos_packet(dummy_proxy, *client);
     for (auto i = 0; i < new_user_id.load(memory_order_relaxed); ++i)
     {
         clients[i].then([&client](auto& cl) {
             send_pos_packet(cl, *client);
         });
     }
-    send_pos_packet(dummy_proxy, *client);
 }
 
 void Server::ProcessChat(int id, char *mess)
