@@ -6,6 +6,8 @@ set(CMAKE_VERBOSE_MAKEFILE true)
 set(OUTPUT_NAME "${CMAKE_PROJECT_NAME}")
 set(SRC_FILES
     main.cpp
+    server.cpp
+    util.cpp
     )
 
 if (NOT CMAKE_BUILD_TYPE)
