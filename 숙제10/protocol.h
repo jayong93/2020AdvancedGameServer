@@ -27,30 +27,33 @@ constexpr unsigned MAX_STR_LEN = 50;
 #define SC_CHAT 6
 #define SC_STAT_CHANGE 7
 
-#define SS_ID_ACQUIRE 8
-#define SS_ID_RESPONSE_OK 9
-#define SS_ID_RESPONSE_FAIL 10
+#define SS_PUT 8
+#define SS_LEAVE 9
+#define SS_MOVE 10
 
 #pragma pack(push, 1)
 
-struct ss_packet_id_acquire
+struct ss_packet_put
 {
 	char size;
 	char type;
-	unsigned desire_id;
+	unsigned id;
+	short x, y;
 };
 
-struct ss_packet_id_response_ok
+struct ss_packet_leave
 {
 	char size;
 	char type;
+	unsigned id;
 };
 
-struct ss_packet_id_response_fail
+struct ss_packet_move
 {
 	char size;
 	char type;
-	unsigned available_min_id;
+	unsigned id;
+	short x, y;
 };
 
 struct sc_packet_login_ok
