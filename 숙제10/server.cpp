@@ -364,7 +364,7 @@ void Server::run()
     else
     {
         auto server_addr = ip::make_address_v4("127.0.0.1");
-        other_server_sock.async_connect(tcp::endpoint{server_addr, unsigned short(SERVER_PORT + 10)}, [this](auto &error) {
+        other_server_sock.async_connect(tcp::endpoint{server_addr, (unsigned short)(SERVER_PORT + 10)}, [this](auto &error) {
             if (error) {
                 cerr << "Can't connect to other server(cause : " << error.message() << ")" << endl;
                 return;
