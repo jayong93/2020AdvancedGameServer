@@ -33,8 +33,6 @@ struct SOCKETINFO {
 
     SOCKETINFO(unsigned id, tcp::socket &&sock) : id{id}, socket{move(sock)} {}
     void insert_to_view(unsigned id) {
-        if (is_proxy) return;
-
         unique_lock<mutex> lg{view_list_lock, try_to_lock};
         if (lg) {
             update_view_from_msg();
@@ -44,8 +42,6 @@ struct SOCKETINFO {
         }
     }
     void erase_from_view(unsigned id) {
-        if (is_proxy) return;
-
         unique_lock<mutex> lg{view_list_lock, try_to_lock};
         if (lg) {
             update_view_from_msg();

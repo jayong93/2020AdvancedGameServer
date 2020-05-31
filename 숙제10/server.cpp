@@ -20,13 +20,13 @@ enum MoveType { None, EnterToEdge, LeaveFromBuffer };
 MoveType check_move_type(short old_y, short new_y, unsigned server_id) {
     short buffer_y;
     if (server_id == 0) {
-        buffer_y = WORLD_HEIGHT / 2 - VIEW_RANGE;
+        buffer_y = WORLD_HEIGHT / 2 - (VIEW_RANGE + 1);
         if (old_y <= buffer_y && buffer_y < new_y)
             return EnterToEdge;
         if (buffer_y <= old_y && new_y < buffer_y)
             return LeaveFromBuffer;
     } else {
-        buffer_y = WORLD_HEIGHT / 2 + (VIEW_RANGE - 1);
+        buffer_y = WORLD_HEIGHT / 2 + VIEW_RANGE;
         if (buffer_y <= old_y && new_y < buffer_y)
             return EnterToEdge;
         if (old_y <= buffer_y && buffer_y < new_y)
@@ -370,11 +370,11 @@ SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y,
 
     bool is_in_edge = false;
     if (server_id == 0) {
-        if (y > WORLD_HEIGHT / 2 - VIEW_RANGE) {
+        if (y > WORLD_HEIGHT / 2 - (VIEW_RANGE + 1)) {
             is_in_edge = true;
         }
     } else {
-        if (y < WORLD_HEIGHT / 2 - (VIEW_RANGE - 1)) {
+        if (y < WORLD_HEIGHT / 2 - VIEW_RANGE) {
             is_in_edge = true;
         }
     }
@@ -495,9 +495,7 @@ void Server::disconnect(unsigned id) {
     client->socket.close();
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
-            if (is_near(other.x, other.y, client->x, client->y)) {
-                send_remove_object_packet(other, *client);
-            }
+            send_remove_object_packet(other, *client);
         });
     }
     if (client->is_in_edge)
@@ -600,9 +598,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
-                    if (is_near(cl.x, cl.y, old_client.x, old_client.y)) {
-                        send_remove_object_packet(cl, old_client);
-                    }
+                    send_remove_object_packet(cl, old_client);
                 });
             }
         });
