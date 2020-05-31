@@ -239,6 +239,16 @@ void Server::ProcessLogin(int user_id, char *id_str) {
     client_slot.is_active.store(true, memory_order_release);
     send_login_ok_packet(*client, user_id);
 
+    for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+        clients[i].then([&client](auto &other) {
+            if (other.is_proxy == false)
+                send_put_object_packet(other, *client);
+            if (other.id != client->id) {
+                send_put_object_packet(*client, other);
+            }
+        });
+    }
+
     send_packet_to_server<ss_packet_put>(this->other_server_send,
                                          [&client](ss_packet_put &p) {
                                              p.size = sizeof(ss_packet_put);
@@ -247,15 +257,6 @@ void Server::ProcessLogin(int user_id, char *id_str) {
                                              p.x = client->x;
                                              p.y = client->y;
                                          });
-
-    for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        clients[i].then([&client](auto &other) {
-            send_put_object_packet(other, *client);
-            if (other.id != client->id) {
-                send_put_object_packet(*client, other);
-            }
-        });
-    }
 }
 
 SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y,
@@ -357,8 +358,8 @@ void Server::handle_accept(tcp::socket &&sock, unsigned user_id) {
     slot.ptr.reset(new_player);
     slot.is_active.store(true, memory_order_release);
     auto old_user_num = user_num.load(memory_order_relaxed);
-    if (old_user_num <= user_id);
-    user_num.fetch_add(user_id - old_user_num + 1, memory_order_relaxed);
+    if (old_user_num <= user_id)
+        user_num.fetch_add(user_id - old_user_num + 1, memory_order_relaxed);
 
     new_player->socket.async_read_some(
         buffer(new_player->recv_buf, MAX_BUFFER),
@@ -459,7 +460,11 @@ void Server::process_packet_from_server(char *buff, size_t length) {
                 client_slot.is_active.store(true, memory_order_release);
                 auto old_user_num = user_num.load(memory_order_relaxed);
                 if (old_user_num <= put_packet->id)
-                user_num.fetch_add(put_packet->id - old_user_num + 1, memory_order_relaxed);
+                    user_num.fetch_add(put_packet->id - old_user_num + 1,
+                                       memory_order_relaxed);
+                fprintf(stderr,
+                        "new client #%d is connected from other server\n",
+                        put_packet->id);
             });
 
         auto &new_client = client_slot.ptr;
