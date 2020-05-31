@@ -9,15 +9,45 @@ using namespace std;
 
 constexpr unsigned MAX_USER_NUM = 20000;
 constexpr unsigned INVALID_ID = -1;
+constexpr unsigned VIEW_RANGE = 6;
 
 static ClientSlot clients[MAX_USER_NUM];
 static atomic_uint user_num{0};
 static unsigned new_user_id{0};
 
+enum MoveType { None, EnterToEdge, LeaveFromBuffer };
+
+MoveType check_move_type(short old_y, short new_y, unsigned server_id) {
+    short buffer_y;
+    if (server_id == 0) {
+        buffer_y = WORLD_HEIGHT / 2 - VIEW_RANGE;
+        if (old_y <= buffer_y && buffer_y < new_y)
+            return EnterToEdge;
+        if (buffer_y <= old_y && new_y < buffer_y)
+            return LeaveFromBuffer;
+    } else {
+        buffer_y = WORLD_HEIGHT / 2 + (VIEW_RANGE - 1);
+        if (buffer_y <= old_y && new_y < buffer_y)
+            return EnterToEdge;
+        if (old_y <= buffer_y && buffer_y < new_y)
+            return LeaveFromBuffer;
+    }
+
+    return None;
+}
+
 pair<unsigned, unsigned> make_random_position(unsigned server_id) {
     return pair(fast_rand() % WORLD_WIDTH,
                 server_id * (WORLD_HEIGHT / 2) +
                     (fast_rand() % (WORLD_HEIGHT / 2)));
+}
+
+bool is_near(int x1, int y1, int x2, int y2) {
+    if (abs(x1 - x2) > VIEW_RANGE)
+        return false;
+    if (abs(y1 - y2) > VIEW_RANGE)
+        return false;
+    return true;
 }
 
 void handle_send(const boost_error &error, const size_t length) {
@@ -162,6 +192,80 @@ void send_chat_packet(SOCKETINFO &client, int teller, char *mess) {
     if (!client.is_proxy)
         send_packet<sc_packet_chat>(client.socket, maker);
 }
+void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
+                         unsigned move_time) {
+    MoveType move_type = check_move_type(client.y, new_y, server_id);
+
+    client.x = new_x;
+    client.y = new_y;
+
+    send_pos_packet(client, client);
+
+    auto old_view_list = client.copy_view_list();
+
+    set<unsigned> new_view_list;
+
+    for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+        clients[i].then([&client, &new_view_list](auto &cl) {
+            if (client.id != cl.id && is_near(cl.x, cl.y, client.x, client.y)) {
+                new_view_list.emplace(cl.id);
+            }
+        });
+    }
+
+    for (auto new_id : new_view_list) {
+        clients[new_id].then([&client, &old_view_list](auto &other) {
+            auto it = old_view_list.find(other.id);
+            if (it == old_view_list.end()) {
+                other.insert_to_view(client.id);
+                send_put_object_packet(client, other);
+                send_put_object_packet(other, client);
+            }
+        });
+    }
+
+    for (auto old_id : old_view_list) {
+        clients[old_id].then([&client, &new_view_list](auto &other) {
+            auto it = new_view_list.find(other.id);
+            if (it == new_view_list.end()) {
+                other.erase_from_view(client.id);
+                send_remove_object_packet(client, other);
+                send_remove_object_packet(other, client);
+            } else {
+                send_pos_packet(other, client);
+            }
+        });
+    }
+
+    if (client.is_in_edge == false && move_type == EnterToEdge) {
+        client.is_in_edge = true;
+        send_packet_to_server<ss_packet_put>(this->other_server_send,
+                                             [&client](ss_packet_put &p) {
+                                                 p.size = sizeof(ss_packet_put);
+                                                 p.type = SS_PUT;
+                                                 p.id = client.id;
+                                                 p.x = client.x;
+                                                 p.y = client.y;
+                                             });
+    } else if (client.is_in_edge == true && move_type == LeaveFromBuffer) {
+        client.is_in_edge = false;
+        send_packet_to_server<ss_packet_leave>(
+            other_server_send, [&client](ss_packet_leave &p) {
+                p.size = sizeof(ss_packet_leave);
+                p.type = SS_LEAVE;
+                p.id = client.id;
+            });
+    } else {
+        send_packet_to_server<ss_packet_move>(
+            other_server_send, [&client](ss_packet_move &p) {
+                p.size = sizeof(ss_packet_move);
+                p.type = SS_MOVE;
+                p.id = client.id;
+                p.x = client.x;
+                p.y = client.y;
+            });
+    }
+}
 
 void Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
     auto &client_slot = clients[id];
@@ -202,20 +306,7 @@ void Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
             ;
     }
 
-    client->x = x;
-    client->y = y;
-
-    for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        clients[i].then([&client](auto &cl) { send_pos_packet(cl, *client); });
-    }
-    send_packet_to_server<ss_packet_move>(other_server_send,
-                                          [&client](ss_packet_move &p) {
-                                              p.size = sizeof(ss_packet_move);
-                                              p.type = SS_MOVE;
-                                              p.id = client->id;
-                                              p.x = client->x;
-                                              p.y = client->y;
-                                          });
+    ProcessMove(*client, x, y, move_time);
 }
 
 void Server::ProcessChat(int id, char *mess) {
@@ -239,33 +330,47 @@ void Server::ProcessLogin(int user_id, char *id_str) {
     client_slot.is_active.store(true, memory_order_release);
     send_login_ok_packet(*client, user_id);
 
-    for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        clients[i].then([&client](auto &other) {
-            if (other.is_proxy == false)
-                send_put_object_packet(other, *client);
-            if (other.id != client->id) {
-                send_put_object_packet(*client, other);
-            }
-        });
-    }
+    // TODO: near id 체크해서 근처 id에만 put 보내기
+    // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+    //     clients[i].then([&client](auto &other) {
+    //         if (other.is_proxy == false)
+    //             send_put_object_packet(other, *client);
+    //         if (other.id != client->id) {
+    //             send_put_object_packet(*client, other);
+    //         }
+    //     });
+    // }
 
-    send_packet_to_server<ss_packet_put>(this->other_server_send,
-                                         [&client](ss_packet_put &p) {
-                                             p.size = sizeof(ss_packet_put);
-                                             p.type = SS_PUT;
-                                             p.id = client->id;
-                                             p.x = client->x;
-                                             p.y = client->y;
-                                         });
+    if (client->is_in_edge)
+        send_packet_to_server<ss_packet_put>(this->other_server_send,
+                                             [&client](ss_packet_put &p) {
+                                                 p.size = sizeof(ss_packet_put);
+                                                 p.type = SS_PUT;
+                                                 p.id = client->id;
+                                                 p.x = client->x;
+                                                 p.y = client->y;
+                                             });
 }
 
 SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y,
-                              bool is_proxy) {
+                              bool is_proxy, unsigned server_id) {
     SOCKETINFO *new_player = new SOCKETINFO{id, move(sock)};
     new_player->prev_packet_size = 0;
     new_player->x = x;
     new_player->y = y;
     new_player->is_proxy = is_proxy;
+
+    bool is_in_edge = false;
+    if (server_id == 0) {
+        if (y > WORLD_HEIGHT / 2 - VIEW_RANGE) {
+            is_in_edge = true;
+        }
+    } else {
+        if (y < WORLD_HEIGHT / 2 - (VIEW_RANGE - 1)) {
+            is_in_edge = true;
+        }
+    }
+    new_player->is_in_edge = is_in_edge;
 
     return new_player;
 }
@@ -274,7 +379,7 @@ SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock,
                               tcp::socket &other_server_sock, bool is_proxy,
                               unsigned server_id) {
     auto [new_x, new_y] = make_random_position(server_id);
-    return create_new_player(id, move(sock), new_x, new_y, is_proxy);
+    return create_new_player(id, move(sock), new_x, new_y, is_proxy, server_id);
 }
 
 void Server::handle_recv(const boost_error &error, const size_t length,
@@ -380,17 +485,19 @@ void Server::disconnect(unsigned id) {
     auto &client = client_slot.ptr;
 
     client->socket.close();
+    // TODO: view_list 복사해와서 그 안의 id들에만 remove 보내기
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
             send_remove_object_packet(other, *client);
         });
     }
-    send_packet_to_server<ss_packet_leave>(other_server_send,
-                                           [&client](ss_packet_leave &p) {
-                                               p.size = sizeof(ss_packet_leave);
-                                               p.type = SS_LEAVE;
-                                               p.id = client->id;
-                                           });
+    if (client->is_in_edge)
+        send_packet_to_server<ss_packet_leave>(
+            other_server_send, [&client](ss_packet_leave &p) {
+                p.size = sizeof(ss_packet_leave);
+                p.type = SS_LEAVE;
+                p.id = client->id;
+            });
 }
 
 void Server::handle_recv_from_server(const boost_error &error,
@@ -444,6 +551,7 @@ void Server::process_packet(int id, void *buff) {
 }
 
 void Server::process_packet_from_server(char *buff, size_t length) {
+    // TODO: view_list 신경써서 패킷 처리하기
     switch (buff[1]) {
     case SS_PUT: {
         ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(buff);
@@ -456,27 +564,24 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             [put_packet, &client_slot, this]() {
                 client_slot.ptr.reset(create_new_player(
                     put_packet->id, tcp::socket{this->context}, put_packet->x,
-                    put_packet->y, true));
+                    put_packet->y, true, 1 - server_id));
                 client_slot.is_active.store(true, memory_order_release);
                 auto old_user_num = user_num.load(memory_order_relaxed);
                 if (old_user_num <= put_packet->id)
                     user_num.fetch_add(put_packet->id - old_user_num + 1,
                                        memory_order_relaxed);
-                fprintf(stderr,
-                        "new client #%d is connected from other server\n",
-                        put_packet->id);
             });
 
         auto &new_client = client_slot.ptr;
         // Send sc_packet_put_object to clients
-        for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-            auto &slot = clients[i];
-            slot.then([put_packet, &new_client](auto &cl) {
-                if (cl.is_proxy == false) {
-                    send_put_object_packet(cl, *new_client);
-                }
-            });
-        }
+        // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+        //     auto &slot = clients[i];
+        //     slot.then([put_packet, &new_client](auto &cl) {
+        //         if (cl.is_proxy == false) {
+        //             send_put_object_packet(cl, *new_client);
+        //         }
+        //     });
+        // }
     } break;
     case SS_LEAVE: {
         ss_packet_leave *leave_packet = (ss_packet_leave *)buff;
@@ -484,14 +589,14 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         client_slot.then([&client_slot](auto &old_client) {
             client_slot.is_active.store(false, memory_order_release);
             // Send sc_packet_remove_object to clients
-            for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-                auto &slot = clients[i];
-                slot.then([&old_client](auto &cl) {
-                    if (cl.is_proxy == false) {
-                        send_remove_object_packet(cl, old_client);
-                    }
-                });
-            }
+            // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+            //     auto &slot = clients[i];
+            //     slot.then([&old_client](auto &cl) {
+            //         if (cl.is_proxy == false) {
+            //             send_remove_object_packet(cl, old_client);
+            //         }
+            //     });
+            // }
         });
     } break;
     case SS_MOVE: {
@@ -501,14 +606,14 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             cl.x = move_packet->x;
             cl.y = move_packet->y;
             // Send sc_packet_remove_object to clients
-            for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-                auto &slot = clients[i];
-                slot.then([&moved_cl = cl](auto &cl) {
-                    if (cl.is_proxy == false) {
-                        send_pos_packet(cl, moved_cl);
-                    }
-                });
-            }
+            // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+            //     auto &slot = clients[i];
+            //     slot.then([&moved_cl = cl](auto &cl) {
+            //         if (cl.is_proxy == false) {
+            //             send_pos_packet(cl, moved_cl);
+            //         }
+            //     });
+            // }
         });
     } break;
     }
