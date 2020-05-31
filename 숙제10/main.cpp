@@ -30,6 +30,6 @@ int main(int argc, char *argv[])
 	}
 	catch (const std::exception &e)
 	{
-		cerr << "Error at main" << e.what() << endl;
+		cerr << "Error at main: " << e.what() << endl;
 	}
 }

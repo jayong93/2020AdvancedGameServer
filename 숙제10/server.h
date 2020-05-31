@@ -17,7 +17,6 @@ struct SOCKETINFO
     char recv_buf[MAX_BUFFER];
     size_t prev_packet_size;
     tcp::socket socket;
-    tcp::socket& other_server_socket;
     unsigned id;
     string name;
 
@@ -25,7 +24,7 @@ struct SOCKETINFO
     short x, y;
     int move_time;
 
-    SOCKETINFO(unsigned id, tcp::socket&& sock, tcp::socket& other_socket) : id{ id }, socket{ move(sock) }, other_server_socket{ other_socket } {}
+    SOCKETINFO(unsigned id, tcp::socket&& sock) : id{ id }, socket{ move(sock) } {}
 };
 
 struct ClientSlot
@@ -63,13 +62,13 @@ private:
     io_context context;
     tcp::acceptor acceptor;
     tcp::acceptor server_acceptor;
-    tcp::socket other_server_sock;
+    tcp::socket other_server_recv;
+    tcp::socket other_server_send;
     tcp::socket pending_client_sock;
 
     char server_recv_buf[MAX_BUFFER];
     size_t prev_packet_len{0};
 
-    SOCKETINFO dummy_proxy;
 
 public:
     Server(unsigned server_id);
