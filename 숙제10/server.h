@@ -113,7 +113,7 @@ class Server {
 
     void disconnect(unsigned id);
 
-    const unsigned server_id;
+    unsigned server_id;
     io_context context;
     tcp::acceptor acceptor;
     tcp::acceptor server_acceptor;
@@ -125,7 +125,7 @@ class Server {
     size_t prev_packet_len{0};
 
   public:
-    Server(unsigned server_id);
+    Server();
     void run();
 };
 #endif /* A5F36F66_1CD6_49C1_9533_263A9B883FE0 */

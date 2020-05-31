@@ -431,13 +431,31 @@ void async_connect_to_other_server(tcp::socket &sock, unsigned short port) {
     });
 }
 
-Server::Server(unsigned s_id)
-    : server_id{s_id}, context{},
-      acceptor{context, tcp::endpoint(tcp::v4(), SERVER_PORT + server_id)},
-      server_acceptor{context,
-                      tcp::endpoint(tcp::v4(), SERVER_PORT + 10 + server_id)},
+Server::Server()
+    : context{},
+      acceptor{context},
+      server_acceptor{context},
       other_server_send{context}, other_server_recv{context},
-      pending_client_sock{context} {}
+      pending_client_sock{context} {
+    auto end_point = tcp::endpoint{ tcp::v4(), SERVER_PORT };
+    acceptor.open(end_point.protocol());
+    boost::system::error_code ec;
+    acceptor.bind(end_point, ec);
+    if (ec) {
+        end_point = tcp::endpoint{ tcp::v4(), SERVER_PORT + 1 };
+        acceptor.bind(end_point);
+        server_id = 1;
+    }
+    else {
+        server_id = 0;
+    }
+    acceptor.listen();
+
+    auto other_end_point = tcp::endpoint{ tcp::v4(), (unsigned short)(SERVER_PORT + 10 + server_id) };
+    server_acceptor.open(other_end_point.protocol());
+    server_acceptor.bind(other_end_point);
+    server_acceptor.listen();
+}
 
 void Server::run() {
     vector<thread> worker_threads;

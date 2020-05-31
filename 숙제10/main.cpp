@@ -18,14 +18,7 @@ int main(int argc, char *argv[])
 {
 	try
 	{
-		cout << "Give a server id : ";
-		unsigned server_id;
-		cin >> server_id;
-
-		if (server_id != 0)
-			server_id = 1;
-
-		Server server{server_id};
+		Server server;
 		server.run();
 	}
 	catch (const std::exception &e)
