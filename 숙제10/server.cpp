@@ -218,6 +218,7 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
             auto it = old_view_list.find(other.id);
             if (it == old_view_list.end()) {
                 other.insert_to_view(client.id);
+                client.insert_to_view(other.id);
                 send_put_object_packet(client, other);
                 send_put_object_packet(other, client);
             }
@@ -229,6 +230,7 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
             auto it = new_view_list.find(other.id);
             if (it == new_view_list.end()) {
                 other.erase_from_view(client.id);
+                client.erase_from_view(other.id);
                 send_remove_object_packet(client, other);
                 send_remove_object_packet(other, client);
             } else {
@@ -236,6 +238,9 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
             }
         });
     }
+
+    if (client.is_proxy)
+        return;
 
     if (client.is_in_edge == false && move_type == EnterToEdge) {
         client.is_in_edge = true;
@@ -255,7 +260,7 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                 p.type = SS_LEAVE;
                 p.id = client.id;
             });
-    } else {
+    } else if (client.is_in_edge) {
         send_packet_to_server<ss_packet_move>(
             other_server_send, [&client](ss_packet_move &p) {
                 p.size = sizeof(ss_packet_move);
@@ -330,16 +335,19 @@ void Server::ProcessLogin(int user_id, char *id_str) {
     client_slot.is_active.store(true, memory_order_release);
     send_login_ok_packet(*client, user_id);
 
-    // TODO: near id 체크해서 근처 id에만 put 보내기
-    // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-    //     clients[i].then([&client](auto &other) {
-    //         if (other.is_proxy == false)
-    //             send_put_object_packet(other, *client);
-    //         if (other.id != client->id) {
-    //             send_put_object_packet(*client, other);
-    //         }
-    //     });
-    // }
+    for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+        clients[i].then([&client](auto &other) {
+            if (is_near(other.x, other.y, client->x, client->y) == false) {
+                return;
+            }
+            if (other.is_proxy == false) {
+                send_put_object_packet(other, *client);
+            }
+            if (other.id != client->id) {
+                send_put_object_packet(*client, other);
+            }
+        });
+    }
 
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_put>(this->other_server_send,
@@ -485,10 +493,11 @@ void Server::disconnect(unsigned id) {
     auto &client = client_slot.ptr;
 
     client->socket.close();
-    // TODO: view_list 복사해와서 그 안의 id들에만 remove 보내기
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
-            send_remove_object_packet(other, *client);
+            if (is_near(other.x, other.y, client->x, client->y)) {
+                send_remove_object_packet(other, *client);
+            }
         });
     }
     if (client->is_in_edge)
@@ -573,47 +582,36 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             });
 
         auto &new_client = client_slot.ptr;
-        // Send sc_packet_put_object to clients
-        // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        //     auto &slot = clients[i];
-        //     slot.then([put_packet, &new_client](auto &cl) {
-        //         if (cl.is_proxy == false) {
-        //             send_put_object_packet(cl, *new_client);
-        //         }
-        //     });
-        // }
+
+        for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+            auto &slot = clients[i];
+            slot.then([put_packet, &new_client](auto &cl) {
+                if (is_near(cl.x, cl.y, new_client->x, new_client->y)) {
+                    send_put_object_packet(cl, *new_client);
+                }
+            });
+        }
     } break;
     case SS_LEAVE: {
         ss_packet_leave *leave_packet = (ss_packet_leave *)buff;
         auto &client_slot = clients[leave_packet->id];
         client_slot.then([&client_slot](auto &old_client) {
             client_slot.is_active.store(false, memory_order_release);
-            // Send sc_packet_remove_object to clients
-            // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-            //     auto &slot = clients[i];
-            //     slot.then([&old_client](auto &cl) {
-            //         if (cl.is_proxy == false) {
-            //             send_remove_object_packet(cl, old_client);
-            //         }
-            //     });
-            // }
+            for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+                auto &slot = clients[i];
+                slot.then([&old_client](auto &cl) {
+                    if (is_near(cl.x, cl.y, old_client.x, old_client.y)) {
+                        send_remove_object_packet(cl, old_client);
+                    }
+                });
+            }
         });
     } break;
     case SS_MOVE: {
         ss_packet_move *move_packet = (ss_packet_move *)buff;
         auto &client_slot = clients[move_packet->id];
-        client_slot.then([&client_slot, move_packet](auto &cl) {
-            cl.x = move_packet->x;
-            cl.y = move_packet->y;
-            // Send sc_packet_remove_object to clients
-            // for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-            //     auto &slot = clients[i];
-            //     slot.then([&moved_cl = cl](auto &cl) {
-            //         if (cl.is_proxy == false) {
-            //             send_pos_packet(cl, moved_cl);
-            //         }
-            //     });
-            // }
+        client_slot.then([&client_slot, move_packet, this](auto &cl) {
+            ProcessMove(cl, move_packet->x, move_packet->y, 0);
         });
     } break;
     }
