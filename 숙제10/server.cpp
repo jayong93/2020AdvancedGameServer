@@ -149,7 +149,12 @@ void send_put_object_packet(SOCKETINFO &client, SOCKETINFO &new_client) {
         packet.type = SC_PUT_OBJECT;
         packet.x = new_client.x;
         packet.y = new_client.y;
-        packet.o_type = 1;
+        if (new_client.is_proxy) {
+            packet.o_type = 2;
+        }
+        else {
+			packet.o_type = 1;
+        }
     };
     if (!client.is_proxy) {
         send_packet<sc_packet_put_object>(client.socket, maker);
@@ -558,7 +563,6 @@ void Server::process_packet(int id, void *buff) {
 }
 
 void Server::process_packet_from_server(char *buff, size_t length) {
-    // TODO: view_list 신경써서 패킷 처리하기
     switch (buff[1]) {
     case SS_PUT: {
         ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(buff);
