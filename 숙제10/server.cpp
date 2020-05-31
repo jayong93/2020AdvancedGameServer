@@ -494,13 +494,14 @@ void Server::disconnect(unsigned id) {
     auto &client_slot = clients[id];
     if (!client_slot)
         return;
-    client_slot.is_active.store(false, memory_order_relaxed);
+    client_slot.is_active.store(false);
     auto &client = client_slot.ptr;
 
     client->socket.close();
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
-            send_remove_object_packet(other, *client);
+            if (is_near(other.x, other.y, client->x, client->y))
+				send_remove_object_packet(other, *client);
         });
     }
     if (client->is_in_edge)
@@ -598,11 +599,12 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         ss_packet_leave *leave_packet = (ss_packet_leave *)buff;
         auto &client_slot = clients[leave_packet->id];
         client_slot.then([&client_slot](auto &old_client) {
-            client_slot.is_active.store(false, memory_order_release);
+            client_slot.is_active.store(false);
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
-                    send_remove_object_packet(cl, old_client);
+                    if (is_near(cl.x, cl.y, old_client.x, old_client.y))
+						send_remove_object_packet(cl, old_client);
                 });
             }
         });
