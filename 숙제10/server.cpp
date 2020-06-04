@@ -428,6 +428,9 @@ void async_connect_to_other_server(tcp::socket &sock, unsigned short port) {
             sock.close();
             async_connect_to_other_server(sock, port);
         }
+        else {
+            cerr << "Connected to other server" << endl;
+        }
     });
 }
 
@@ -472,6 +475,9 @@ void Server::run() {
             cerr << "Can't accept other server(cause : " << error.message()
                  << ")" << endl;
             return;
+        }
+        else {
+            cerr << "Other server has connected" << endl;
         }
         other_server_recv.async_read_some(buffer(server_recv_buf, MAX_BUFFER),
                                           [this](auto &error, auto length) {
