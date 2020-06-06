@@ -33,6 +33,13 @@ constexpr unsigned MAX_STR_LEN = 50;
 
 #pragma pack(push, 1)
 
+// TODO: Front-End와 통신할 패킷들 정의
+// - try_login: front-end가 server에게. 로그인 시도하는 id가 담겨있음
+// - accept_login: server가 front-end에게. 시도한 id 그대로 돌려줌
+// - logout: front-end가 server에게. 접속이 끊어진 client id를 전송
+// - hand_over: server가 front-end와 다른 server에게. 다른 서버는 is_proxy를 바꾸고, front-end는 담당 서버 변경(기존 소켓 disconnect 후 새로운 서버에 connect)
+// - forwarding_packet: 전체 사이즈 + 대상 id + 실제 패킷(size, type 포함)
+
 struct packet_header {
     char size;
     char type;

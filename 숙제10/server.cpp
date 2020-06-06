@@ -59,6 +59,8 @@ void handle_send(const boost_error &error, const size_t length) {
 template <typename F>
 void assemble_packet(char *recv_buf, size_t &prev_packet_size,
                      size_t received_bytes, F &&packet_handler) {
+    // TODO: id 배열 읽고 루프 돌면서 packet_handler 호출
+    // - front-end에서 오는 패킷은 size, type, target_id, packet_data 로 이루어져 있음.
     char *p = recv_buf;
     auto remain = received_bytes;
     unsigned packet_size;
@@ -72,7 +74,7 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
             packet_size = p[0];
         unsigned required = packet_size - prev_packet_size;
         if (required <= remain) {
-            packet_handler(p, packet_size);
+            packet_handler(id, p, packet_size);
             remain -= required;
             p += packet_size;
             prev_packet_size = 0;
@@ -101,28 +103,30 @@ void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
 
 // user_num은 32bit unsigned int, user는 id => unsigned int
 template <typename P, typename F>
-void send_packet_all(SOCKETINFO* users, unsigned user_num, F &&packet_maker_func) {
-    unsigned packet_offset = sizeof(packet_header) + sizeof(unsigned) * (1+user_num);
+void send_packet_all(SOCKETINFO *users, unsigned user_num,
+                     F &&packet_maker_func) {
+    unsigned packet_offset =
+        sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
     unsigned total_size = packet_offset + sizeof(P);
-    char* packet = new char[total_size];
+    char *packet = new char[total_size];
 
-    packet_header* header = (packet_header*)packet;
+    packet_header *header = (packet_header *)packet;
     header->size = total_size;
     header->type = P::type_num;
 
-    unsigned* user_data = (unsigned*)(packet + sizeof(packet_header));
+    unsigned *user_data = (unsigned *)(packet + sizeof(packet_header));
     *user_data = user_num;
-    for (auto i=0; i<user_num; ++i) {
+    for (auto i = 0; i < user_num; ++i) {
         *(user_data + i + 1) = users[i].id;
     }
 
-    packet_maker_func(*(P*)(packet + packet_offset));
+    packet_maker_func(*(P *)(packet + packet_offset));
 
-    client.async_send(buffer(packet, total_size),
-                      [packet](auto error, auto length) {
-                          delete[] packet;
-                          handle_send(error, length);
-                      });
+    users->sock.async_send(buffer(packet, total_size),
+                           [packet](auto error, auto length) {
+                               delete[] packet;
+                               handle_send(error, length);
+                           });
 }
 
 template <typename P, typename F>
@@ -130,11 +134,11 @@ void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
     unsigned total_size = sizeof(packet_header) + sizeof(P);
     char *buf = new char[total_size];
 
-    packet_header* header = (packet_header*)packet;
+    packet_header *header = (packet_header *)packet;
     header->size = total_size;
     header->type = P::type_num;
 
-    packet_maker_func(*(P*)(buf + sizeof(packet_header)));
+    packet_maker_func(*(P *)(buf + sizeof(packet_header)));
 
     sock.async_send(buffer(buf, total_size), [buf](auto error, auto length) {
         delete[] buf;
@@ -158,8 +162,8 @@ void send_login_ok_packet(SOCKETINFO &client, unsigned id) {
 }
 
 void send_login_fail(SOCKETINFO &client) {
-    send_packet<sc_packet_login_fail>(client, [](sc_packet_login_fail &packet) {
-    });
+    send_packet<sc_packet_login_fail>(client,
+                                      [](sc_packet_login_fail &packet) {});
 }
 
 void send_put_object_packet(SOCKETINFO &client, SOCKETINFO &new_client) {
@@ -169,9 +173,8 @@ void send_put_object_packet(SOCKETINFO &client, SOCKETINFO &new_client) {
         packet.y = new_client.y;
         if (new_client.is_proxy) {
             packet.o_type = 2;
-        }
-        else {
-			packet.o_type = 1;
+        } else {
+            packet.o_type = 1;
         }
     };
     if (!client.is_proxy) {
@@ -270,16 +273,15 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
     } else if (client.is_in_edge == true && move_type == LeaveFromBuffer) {
         client.is_in_edge = false;
         send_packet_to_server<ss_packet_leave>(
-            other_server_send, [&client](ss_packet_leave &p) {
-                p.id = client.id;
-            });
+            other_server_send,
+            [&client](ss_packet_leave &p) { p.id = client.id; });
     } else if (client.is_in_edge) {
-        send_packet_to_server<ss_packet_move>(
-            other_server_send, [&client](ss_packet_move &p) {
-                p.id = client.id;
-                p.x = client.x;
-                p.y = client.y;
-            });
+        send_packet_to_server<ss_packet_move>(other_server_send,
+                                              [&client](ss_packet_move &p) {
+                                                  p.id = client.id;
+                                                  p.x = client.x;
+                                                  p.y = client.y;
+                                              });
     }
 }
 
@@ -369,10 +371,9 @@ void Server::ProcessLogin(int user_id, char *id_str) {
                                              });
 }
 
-SOCKETINFO *create_new_player(unsigned id, short x, short y,
+SOCKETINFO *create_new_player(tcp::socket &sock, unsigned id, short x, short y,
                               bool is_proxy, unsigned server_id) {
-    SOCKETINFO *new_player = new SOCKETINFO{id};
-    new_player->prev_packet_size = 0;
+    SOCKETINFO *new_player = new SOCKETINFO{id, sock};
     new_player->x = x;
     new_player->y = y;
     new_player->is_proxy = is_proxy;
@@ -392,28 +393,26 @@ SOCKETINFO *create_new_player(unsigned id, short x, short y,
     return new_player;
 }
 
-SOCKETINFO *create_new_player(unsigned id,
-                              tcp::socket &other_server_sock, bool is_proxy,
+SOCKETINFO *create_new_player(tcp::socket &sock, unsigned id, bool is_proxy,
                               unsigned server_id) {
     auto [new_x, new_y] = make_random_position(server_id);
-    return create_new_player(id, new_x, new_y, is_proxy, server_id);
+    return create_new_player(sock, id, new_x, new_y, is_proxy, server_id);
 }
 
 void Server::handle_recv(const boost_error &error, const size_t length,
                          SOCKETINFO *client) {
     if (error) {
-        cerr << "Error at recv(client #" << client->id
-             << "): " << error.message() << endl;
-        disconnect(client->id);
+        cerr << "Error at recv : " << error.message() << endl;
+        exit(-1);
     } else if (length == 0) {
-        disconnect(client->id);
+        exit(0);
     } else {
-        assemble_packet((char *)client->recv_buf, client->prev_packet_size,
-                        length, [client, this](char *packet, auto len) {
-                            process_packet(client->id, packet);
+        assemble_packet(this->recv_buf, this->prev_packet_len, length,
+                        [this](unsigned id, char *packet, auto len) {
+                            process_packet(id, packet);
                         });
 
-        front_end_sock.async_read_some(buffer(client->recv_buf, MAX_BUFFER),
+        front_end_sock.async_read_some(buffer(this->recv_buf, MAX_BUFFER),
                                        [client, this](auto error, auto length) {
                                            handle_recv(error, length, client);
                                        });
@@ -431,34 +430,31 @@ void async_connect_to_other_server(tcp::socket &sock, unsigned short port) {
             cerr << "Retry..." << endl;
             sock.close();
             async_connect_to_other_server(sock, port);
-        }
-        else {
+        } else {
             cerr << "Connected to other server" << endl;
         }
     });
 }
 
 Server::Server()
-    : context{},
-      acceptor{context},
-      server_acceptor{context},
-      other_server_send{context}, other_server_recv{context},
-      pending_client_sock{context} {
-    auto end_point = tcp::endpoint{ tcp::v4(), SERVER_PORT };
+    : context{}, acceptor{context}, server_acceptor{context},
+      other_server_send{context}, other_server_recv{context}, front_end_sock{
+                                                                  context} {
+    auto end_point = tcp::endpoint{tcp::v4(), SERVER_PORT};
     acceptor.open(end_point.protocol());
     boost::system::error_code ec;
     acceptor.bind(end_point, ec);
     if (ec) {
-        end_point = tcp::endpoint{ tcp::v4(), SERVER_PORT + 1 };
+        end_point = tcp::endpoint{tcp::v4(), SERVER_PORT + 1};
         acceptor.bind(end_point);
         server_id = 1;
-    }
-    else {
+    } else {
         server_id = 0;
     }
     acceptor.listen();
 
-    auto other_end_point = tcp::endpoint{ tcp::v4(), (unsigned short)(SERVER_PORT + 10 + server_id) };
+    auto other_end_point = tcp::endpoint{
+        tcp::v4(), (unsigned short)(SERVER_PORT + 10 + server_id)};
     server_acceptor.open(other_end_point.protocol());
     server_acceptor.bind(other_end_point);
     server_acceptor.listen();
@@ -466,9 +462,15 @@ Server::Server()
 
 void Server::run() {
     vector<thread> worker_threads;
-    acceptor.async_accept(pending_client_sock, [this](boost_error error) {
-        handle_accept(move(pending_client_sock),
-                      new_user_id++ * 2 + this->server_id);
+    acceptor.async_accept(front_end_sock, [this](boost_error error) {
+        if (error) {
+            cerr << "Can't accept front end" << endl;
+        } else {
+            front_end_sock.async_read_some(buffer(recv_buf, MAX_BUFFER),
+                                           [this](auto &error, auto length) {
+                                               handle_recv(error, length);
+                                           });
+        }
     });
     for (int i = 0; i < 8; ++i)
         worker_threads.emplace_back([this]() { context.run(); });
@@ -479,11 +481,10 @@ void Server::run() {
             cerr << "Can't accept other server(cause : " << error.message()
                  << ")" << endl;
             return;
-        }
-        else {
+        } else {
             cerr << "Other server has connected" << endl;
         }
-        other_server_recv.async_read_some(buffer(server_recv_buf, MAX_BUFFER),
+        other_server_recv.async_read_some(buffer(other_recv_buf, MAX_BUFFER),
                                           [this](auto &error, auto length) {
                                               handle_recv_from_server(error,
                                                                       length);
@@ -497,25 +498,15 @@ void Server::run() {
         th.join();
 }
 
-void Server::handle_accept(tcp::socket &&sock, unsigned user_id) {
-    auto new_player = create_new_player(
-        user_id, move(sock), this->other_server_send, false, server_id);
+void Server::handle_accept(unsigned user_id) {
+    auto new_player =
+        create_new_player(this->front_end_sock, user_id, false, server_id);
     auto &slot = clients[new_player->id];
     slot.ptr.reset(new_player);
     slot.is_active.store(true, memory_order_release);
     auto old_user_num = user_num.load(memory_order_relaxed);
     if (old_user_num <= user_id)
         user_num.fetch_add(user_id - old_user_num + 1, memory_order_relaxed);
-
-    new_player->socket.async_read_some(
-        buffer(new_player->recv_buf, MAX_BUFFER),
-        [new_player, this](auto error, auto length) {
-            handle_recv(error, length, new_player);
-        });
-
-    acceptor.async_accept(pending_client_sock, [this](auto error) {
-        handle_accept(move(pending_client_sock), new_user_id++ * 2 + server_id);
-    });
 }
 
 void Server::disconnect(unsigned id) {
@@ -525,18 +516,16 @@ void Server::disconnect(unsigned id) {
     client_slot.is_active.store(false);
     auto &client = client_slot.ptr;
 
-    client->socket.close();
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
             if (is_near(other.x, other.y, client->x, client->y))
-				send_remove_object_packet(other, *client);
+                send_remove_object_packet(other, *client);
         });
     }
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_leave>(
-            other_server_send, [&client](ss_packet_leave &p) {
-                p.id = client->id;
-            });
+            other_server_send,
+            [&client](ss_packet_leave &p) { p.id = client->id; });
 }
 
 void Server::handle_recv_from_server(const boost_error &error,
@@ -544,12 +533,12 @@ void Server::handle_recv_from_server(const boost_error &error,
     if (error) {
         cerr << "Error at recv from other server: " << error.message() << endl;
     } else if (length > 0) {
-        assemble_packet(server_recv_buf, prev_packet_len, length,
+        assemble_packet(other_recv_buf, other_prev_len, length,
                         [this](char *packet, unsigned len) {
                             process_packet_from_server(packet, len);
                         });
 
-        other_server_recv.async_read_some(buffer(server_recv_buf, MAX_BUFFER),
+        other_server_recv.async_read_some(buffer(other_recv_buf, MAX_BUFFER),
                                           [this](auto error, auto length) {
                                               handle_recv_from_server(error,
                                                                       length);
@@ -601,7 +590,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             },
             [put_packet, &client_slot, this]() {
                 client_slot.ptr.reset(create_new_player(
-                    put_packet->id, tcp::socket{this->context}, put_packet->x,
+                    this->front_end_sock, put_packet->id, put_packet->x,
                     put_packet->y, true, 1 - server_id));
                 client_slot.is_active.store(true, memory_order_release);
                 auto old_user_num = user_num.load(memory_order_relaxed);
@@ -630,7 +619,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
                     if (is_near(cl.x, cl.y, old_client.x, old_client.y))
-						send_remove_object_packet(cl, old_client);
+                        send_remove_object_packet(cl, old_client);
                 });
             }
         });

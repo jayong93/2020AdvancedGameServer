@@ -20,12 +20,12 @@ struct ViewEvent {
 };
 
 // TODO: client에 있는 recv buf와 prev_packet_size를 server로 옮기기
-// TODO: 모든 send 함수들을 server 구조체의 method로 바꾸거나, socket을 받아서 전송하도록 변경
+// TODO: 모든 send 함수들을 server 구조체의 method로 바꾸거나, socket을 받아서
+// 전송하도록 변경
 
 struct SOCKETINFO {
-    char recv_buf[MAX_BUFFER];
-    size_t prev_packet_size;
     unsigned id;
+    tcp::socket &sock;
     string name;
 
     bool is_proxy;
@@ -33,7 +33,7 @@ struct SOCKETINFO {
     int move_time;
     bool is_in_edge{false};
 
-    SOCKETINFO(unsigned id) : id{id} {}
+    SOCKETINFO(unsigned id, tcp::socket &sock) : id{id}, sock{sock} {}
     void insert_to_view(unsigned id) {
         unique_lock<mutex> lg{view_list_lock, try_to_lock};
         if (lg) {
@@ -57,6 +57,7 @@ struct SOCKETINFO {
         update_view_from_msg();
         return view_list;
     }
+
   private:
     set<unsigned> view_list;
     mutex view_list_lock;
@@ -76,7 +77,6 @@ struct SOCKETINFO {
             }
         }
     }
-
 };
 
 struct ClientSlot {
@@ -101,7 +101,7 @@ struct ClientSlot {
 };
 class Server {
   private:
-    void handle_accept(tcp::socket &&sock, unsigned user_id);
+    void handle_accept(unsigned user_id);
     void handle_recv(const boost_error &error, const size_t length,
                      SOCKETINFO *client);
     void handle_recv_from_server(const boost_error &error, const size_t length);
@@ -111,7 +111,8 @@ class Server {
     void ProcessLogin(int user_id, char *id_str);
     void ProcessChat(int id, char *mess);
     void ProcessMove(int id, unsigned char dir, unsigned move_time);
-    void ProcessMove(SOCKETINFO& cl, short new_x, short new_y, unsigned move_time);
+    void ProcessMove(SOCKETINFO &cl, short new_x, short new_y,
+                     unsigned move_time);
 
     void disconnect(unsigned id);
 
@@ -123,8 +124,11 @@ class Server {
     tcp::socket other_server_send;
     tcp::socket front_end_sock;
 
-    char server_recv_buf[MAX_BUFFER];
-    size_t prev_packet_len{0};
+    char recv_buf[MAX_BUFFER];
+    size_t prev_packet_len;
+
+    char other_recv_buf[MAX_BUFFER];
+    size_t other_prev_len{0};
 
   public:
     Server();
