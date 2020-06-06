@@ -33,94 +33,88 @@ constexpr unsigned MAX_STR_LEN = 50;
 
 #pragma pack(push, 1)
 
-struct ss_packet_put
-{
-	char size;
-	char type;
-	unsigned id;
-	short x, y;
+struct packet_header {
+    char size;
+    char type;
 };
 
-struct ss_packet_leave
-{
-	char size;
-	char type;
-	unsigned id;
+struct ss_packet_put {
+    using type = char;
+    static constexpr type type_num = 8;
+    unsigned id;
+    short x, y;
 };
 
-struct ss_packet_move
-{
-	char size;
-	char type;
-	unsigned id;
-	short x, y;
+struct ss_packet_leave {
+    using type = char;
+    static constexpr type type_num = 9;
+    unsigned id;
 };
 
-struct sc_packet_login_ok
-{
-	char size;
-	char type;
-	int id;
-	short x, y;
-	short hp;
-	short level;
-	int exp;
+struct ss_packet_move {
+    using type = char;
+    static constexpr type type_num = 10;
+    unsigned id;
+    short x, y;
 };
 
-struct sc_packet_login_fail
-{
-	char size;
-	char type;
+struct sc_packet_login_ok {
+    using type = char;
+    static constexpr type type_num = 1;
+    int id;
+    short x, y;
+    short hp;
+    short level;
+    int exp;
 };
 
-struct sc_packet_pos
-{
-	char size;
-	char type;
-	int id;
-	short x, y;
-	unsigned move_time;
+struct sc_packet_login_fail {
+    using type = char;
+    static constexpr type type_num = 2;
 };
 
-struct sc_packet_put_object
-{
-	char size;
-	char type;
-	int id;
-	char o_type;
-	short x, y;
-	// 렌더링 정보, 종족, 성별, 착용 아이템, 캐릭터 외형, 이름, 길드....
+struct sc_packet_pos {
+    using type = char;
+    static constexpr type type_num = 3;
+    int id;
+    short x, y;
+    unsigned move_time;
 };
 
-struct sc_packet_remove_object
-{
-	char size;
-	char type;
-	int id;
+struct sc_packet_put_object {
+    using type = char;
+    static constexpr type type_num = 4;
+    int id;
+    char o_type;
+    short x, y;
+    // 렌더링 정보, 종족, 성별, 착용 아이템, 캐릭터 외형, 이름, 길드....
 };
 
-struct sc_packet_chat
-{
-	char size;
-	char type;
-	int id;
-	char chat[100];
+struct sc_packet_remove_object {
+    using type = char;
+    static constexpr type type_num = 5;
+    int id;
 };
 
-struct sc_packet_stat_change
-{
-	char size;
-	char type;
-	short hp;
-	short level;
-	int exp;
+struct sc_packet_chat {
+    using type = char;
+    static constexpr type type_num = 6;
+    int id;
+    char chat[100];
 };
 
-struct cs_packet_login
-{
-	char size;
-	char type;
-	char id[MAX_ID_LEN];
+struct sc_packet_stat_change {
+    using type = char;
+    static constexpr type type_num = 7;
+    short hp;
+    short level;
+    int exp;
+};
+
+struct cs_packet_login {
+    using type = char;
+    static constexpr type type_num = 1;
+    char id[MAX_ID_LEN];
 };
 
 constexpr unsigned char D_UP = 0;
@@ -128,37 +122,32 @@ constexpr unsigned char D_DOWN = 1;
 constexpr unsigned char D_LEFT = 2;
 constexpr unsigned char D_RIGHT = 3;
 
-struct cs_packet_move
-{
-	char size;
-	char type;
-	char direction;
-	int move_time;
+struct cs_packet_move {
+    using type = char;
+    static constexpr type type_num = 2;
+    char direction;
+    int move_time;
 };
 
-struct cs_packet_attack
-{
-	char size;
-	char type;
+struct cs_packet_attack {
+    using type = char;
+    static constexpr type type_num = 3;
 };
 
-struct cs_packet_chat
-{
-	char size;
-	char type;
-	char chat_str[100];
+struct cs_packet_chat {
+    using type = char;
+    static constexpr type type_num = 4;
+    char chat_str[100];
 };
 
-struct cs_packet_logout
-{
-	char size;
-	char type;
+struct cs_packet_logout {
+    using type = char;
+    static constexpr type type_num = 5;
 };
 
-struct cs_packet_teleport
-{
-	char size;
-	char type;
+struct cs_packet_teleport {
+    using type = char;
+    static constexpr type type_num = 6;
 };
 
 #pragma pack(pop)

@@ -91,29 +91,53 @@ void send_packet(int id, F &&packet_maker_func) {
     if (!client_slot)
         return;
 
-    send_packet<P>(client_slot.ptr->socket, move(packet_maker_func));
+    send_packet<P>(*client_slot.ptr, move(packet_maker_func));
 }
 
 template <typename P, typename F>
-void send_packet(tcp::socket &client, F &&packet_maker_func) {
-    P *packet = new P;
-    packet_maker_func(*packet);
+void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
+    send_packet_all<P>(&client, 1, move(packet_maker_func));
+}
 
-    client.async_send(buffer(packet, sizeof(P)),
+// user_num은 32bit unsigned int, user는 id => unsigned int
+template <typename P, typename F>
+void send_packet_all(SOCKETINFO* users, unsigned user_num, F &&packet_maker_func) {
+    unsigned packet_offset = sizeof(packet_header) + sizeof(unsigned) * (1+user_num);
+    unsigned total_size = packet_offset + sizeof(P);
+    char* packet = new char[total_size];
+
+    packet_header* header = (packet_header*)packet;
+    header->size = total_size;
+    header->type = P::type_num;
+
+    unsigned* user_data = (unsigned*)(packet + sizeof(packet_header));
+    *user_data = user_num;
+    for (auto i=0; i<user_num; ++i) {
+        *(user_data + i + 1) = users[i].id;
+    }
+
+    packet_maker_func(*(P*)(packet + packet_offset));
+
+    client.async_send(buffer(packet, total_size),
                       [packet](auto error, auto length) {
-                          delete packet;
+                          delete[] packet;
                           handle_send(error, length);
                       });
 }
 
 template <typename P, typename F>
 void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
-    P *buf = new P;
+    unsigned total_size = sizeof(packet_header) + sizeof(P);
+    char *buf = new char[total_size];
 
-    packet_maker_func(*buf);
+    packet_header* header = (packet_header*)packet;
+    header->size = total_size;
+    header->type = P::type_num;
 
-    sock.async_send(buffer(buf, sizeof(P)), [buf](auto error, auto length) {
-        delete buf;
+    packet_maker_func(*(P*)(buf + sizeof(packet_header)));
+
+    sock.async_send(buffer(buf, total_size), [buf](auto error, auto length) {
+        delete[] buf;
         if (error) {
             cerr << "Error at send to server : " << error.message() << endl;
         }
@@ -123,8 +147,6 @@ void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
 void send_login_ok_packet(SOCKETINFO &client, unsigned id) {
     auto maker = [&client, id](sc_packet_login_ok &packet) {
         packet.id = id;
-        packet.size = sizeof(packet);
-        packet.type = SC_LOGIN_OK;
         packet.x = client.x;
         packet.y = client.y;
         packet.hp = 100;
@@ -132,21 +154,17 @@ void send_login_ok_packet(SOCKETINFO &client, unsigned id) {
         packet.exp = 1;
     };
     if (!client.is_proxy)
-        send_packet<sc_packet_login_ok>(client.socket, maker);
+        send_packet<sc_packet_login_ok>(client, maker);
 }
 
-void send_login_fail(tcp::socket &sock) {
-    send_packet<sc_packet_login_fail>(sock, [](sc_packet_login_fail &packet) {
-        packet.size = sizeof(packet);
-        packet.type = SC_LOGIN_FAIL;
+void send_login_fail(SOCKETINFO &client) {
+    send_packet<sc_packet_login_fail>(client, [](sc_packet_login_fail &packet) {
     });
 }
 
 void send_put_object_packet(SOCKETINFO &client, SOCKETINFO &new_client) {
     auto maker = [&new_client](sc_packet_put_object &packet) {
         packet.id = new_client.id;
-        packet.size = sizeof(packet);
-        packet.type = SC_PUT_OBJECT;
         packet.x = new_client.x;
         packet.y = new_client.y;
         if (new_client.is_proxy) {
@@ -157,45 +175,39 @@ void send_put_object_packet(SOCKETINFO &client, SOCKETINFO &new_client) {
         }
     };
     if (!client.is_proxy) {
-        send_packet<sc_packet_put_object>(client.socket, maker);
+        send_packet<sc_packet_put_object>(client, maker);
     }
 }
 
 void send_pos_packet(SOCKETINFO &client, SOCKETINFO &mover) {
     auto maker = [&mover, &client](sc_packet_pos &packet) {
         packet.id = mover.id;
-        packet.size = sizeof(packet);
-        packet.type = SC_POS;
         packet.x = mover.x;
         packet.y = mover.y;
         packet.move_time = client.move_time;
     };
     if (!client.is_proxy) {
-        send_packet<sc_packet_pos>(client.socket, maker);
+        send_packet<sc_packet_pos>(client, maker);
     }
 }
 
 void send_remove_object_packet(SOCKETINFO &client, SOCKETINFO &leaver) {
     auto maker = [&leaver](sc_packet_remove_object &packet) {
         packet.id = leaver.id;
-        packet.size = sizeof(packet);
-        packet.type = SC_REMOVE_OBJECT;
     };
 
     if (!client.is_proxy) {
-        send_packet<sc_packet_remove_object>(client.socket, maker);
+        send_packet<sc_packet_remove_object>(client, maker);
     }
 }
 
 void send_chat_packet(SOCKETINFO &client, int teller, char *mess) {
     auto maker = [teller, mess](sc_packet_chat &packet) {
         packet.id = teller;
-        packet.size = sizeof(packet);
-        packet.type = SC_CHAT;
         strcpy(packet.chat, mess);
     };
     if (!client.is_proxy)
-        send_packet<sc_packet_chat>(client.socket, maker);
+        send_packet<sc_packet_chat>(client, maker);
 }
 void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                          unsigned move_time) {
@@ -251,8 +263,6 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
         client.is_in_edge = true;
         send_packet_to_server<ss_packet_put>(this->other_server_send,
                                              [&client](ss_packet_put &p) {
-                                                 p.size = sizeof(ss_packet_put);
-                                                 p.type = SS_PUT;
                                                  p.id = client.id;
                                                  p.x = client.x;
                                                  p.y = client.y;
@@ -261,15 +271,11 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
         client.is_in_edge = false;
         send_packet_to_server<ss_packet_leave>(
             other_server_send, [&client](ss_packet_leave &p) {
-                p.size = sizeof(ss_packet_leave);
-                p.type = SS_LEAVE;
                 p.id = client.id;
             });
     } else if (client.is_in_edge) {
         send_packet_to_server<ss_packet_move>(
             other_server_send, [&client](ss_packet_move &p) {
-                p.size = sizeof(ss_packet_move);
-                p.type = SS_MOVE;
                 p.id = client.id;
                 p.x = client.x;
                 p.y = client.y;
@@ -357,17 +363,15 @@ void Server::ProcessLogin(int user_id, char *id_str) {
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_put>(this->other_server_send,
                                              [&client](ss_packet_put &p) {
-                                                 p.size = sizeof(ss_packet_put);
-                                                 p.type = SS_PUT;
                                                  p.id = client->id;
                                                  p.x = client->x;
                                                  p.y = client->y;
                                              });
 }
 
-SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y,
+SOCKETINFO *create_new_player(unsigned id, short x, short y,
                               bool is_proxy, unsigned server_id) {
-    SOCKETINFO *new_player = new SOCKETINFO{id, move(sock)};
+    SOCKETINFO *new_player = new SOCKETINFO{id};
     new_player->prev_packet_size = 0;
     new_player->x = x;
     new_player->y = y;
@@ -388,11 +392,11 @@ SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock, short x, short y,
     return new_player;
 }
 
-SOCKETINFO *create_new_player(unsigned id, tcp::socket &&sock,
+SOCKETINFO *create_new_player(unsigned id,
                               tcp::socket &other_server_sock, bool is_proxy,
                               unsigned server_id) {
     auto [new_x, new_y] = make_random_position(server_id);
-    return create_new_player(id, move(sock), new_x, new_y, is_proxy, server_id);
+    return create_new_player(id, new_x, new_y, is_proxy, server_id);
 }
 
 void Server::handle_recv(const boost_error &error, const size_t length,
@@ -409,7 +413,7 @@ void Server::handle_recv(const boost_error &error, const size_t length,
                             process_packet(client->id, packet);
                         });
 
-        client->socket.async_read_some(buffer(client->recv_buf, MAX_BUFFER),
+        front_end_sock.async_read_some(buffer(client->recv_buf, MAX_BUFFER),
                                        [client, this](auto error, auto length) {
                                            handle_recv(error, length, client);
                                        });
@@ -531,8 +535,6 @@ void Server::disconnect(unsigned id) {
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_leave>(
             other_server_send, [&client](ss_packet_leave &p) {
-                p.size = sizeof(ss_packet_leave);
-                p.type = SS_LEAVE;
                 p.id = client->id;
             });
 }
