@@ -13,7 +13,6 @@ constexpr unsigned VIEW_RANGE = 6;
 
 static ClientSlot clients[MAX_USER_NUM];
 static atomic_uint user_num{0};
-static unsigned new_user_id{0};
 
 enum MoveType { None, EnterToEdge, LeaveFromBuffer };
 
@@ -407,7 +406,11 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
     } else {
         assemble_packet(this->recv_buf, this->prev_packet_len, length,
                         [this](unsigned id, char *packet, auto len) {
-                            process_packet(id, packet);
+                            char *buf = new char[len];
+                            memcpy(buf, packet, len);
+                            clients[id].then([buf](SOCKETINFO &cl) {
+                                cl.pending_packets.emplace(make_unique(buf));
+                            })
                         });
 
         front_end_sock.async_read_some(
@@ -451,6 +454,26 @@ Server::Server(unsigned short port)
     server_acceptor.listen();
 }
 
+void Server::do_worker(unsigned worker_id) {
+    SPSCQueue<unsigned> &queue = this->worker_queue[worker_id];
+    while (true) {
+        if (queue.is_empty())
+            continue;
+
+        auto user_id = *queue.deq();
+
+        clients[user_id].then([this, user_id](SOCKETINFO &cl) {
+            auto pending_len = cl.pending_packets.size();
+            for (auto i = 0; i < pending_len; ++i) {
+                auto packet = *cl.pending_packets.deq();
+                this->process_packet_from_front_end(user_id, packet.get());
+            }
+        });
+
+        clients[user_id].ptr->is_handling.store(false, memory_order_release);
+    }
+}
+
 void Server::run() {
     vector<thread> worker_threads;
     acceptor.async_accept(front_end_sock, [this](boost_error error) {
@@ -463,8 +486,28 @@ void Server::run() {
                                            });
         }
     });
-    for (int i = 0; i < 8; ++i)
-        worker_threads.emplace_back([this]() { context.run(); });
+
+    thread io_thread{[this]() { context.run(); }};
+    thread master_thread{[this]() {
+        unsigned next_worker_id = 0;
+        while (true) {
+            for (unsigned i = 0; i < user_num.load(memory_order_acquire); ++i) {
+                clients[i].then([this, &next_worker_id, i](SOCKETINFO &cl) {
+                    if (cl.pending_packets.is_empty())
+                        return;
+
+                    if (cl.is_handling.load(memory_order_acquire) == false) {
+                        if (cl.is_handling.exchange(true) == true)
+                            return;
+                        this->worker_queue[next_worker_id].emplace(i);
+                        next_worker_id = (next_worker_id + 1) % NUM_WORKER;
+                    }
+                });
+            }
+        }
+    }};
+    for (int i = 0; i < NUM_WORKER; ++i)
+        worker_threads.emplace_back([this, i]() { do_worker(i); });
     cerr << "Server has started" << endl;
 
     server_acceptor.async_accept(other_server_recv, [this](boost_error error) {
@@ -485,6 +528,7 @@ void Server::run() {
     unsigned short port = SERVER_PORT + 10 + (1 - server_id);
     async_connect_to_other_server(other_server_send, port);
 
+    io_thread.join();
     for (auto &th : worker_threads)
         th.join();
 }
@@ -534,6 +578,22 @@ void Server::handle_recv_from_server(const boost_error &error,
                                               handle_recv_from_server(error,
                                                                       length);
                                           });
+    }
+}
+
+void Server::process_packet_from_front_end(unsigned id, char *packet) {
+    // TODO: parsing packet
+    switch (packet[1]) {
+    case fs_packet_try_login::type_num: {
+
+    } break;
+    case fs_packet_logout::type_num: {
+
+    } break;
+    case fs_packet_forwarding::type_num: {
+        // TODO: call process_packet function if needed
+
+    } break;
     }
 }
 

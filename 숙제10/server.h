@@ -3,6 +3,7 @@
 
 #include "mpsc_queue.h"
 #include "protocol.h"
+#include "spsc_queue.h"
 #include <boost/asio.hpp>
 #include <memory>
 #include <mutex>
@@ -13,6 +14,8 @@ using namespace std;
 using namespace boost::asio;
 using namespace boost::asio::ip;
 using boost_error = boost::system::error_code;
+
+constexpr unsigned NUM_WORKER = 6;
 
 struct ViewEvent {
     enum { VIEW_IN, VIEW_OUT } event;
@@ -32,6 +35,9 @@ struct SOCKETINFO {
     short x, y;
     int move_time;
     bool is_in_edge{false};
+
+    SPSCQueue<unique_ptr<char[]>> pending_packets;
+    atomic_bool is_handling{false};
 
     SOCKETINFO(unsigned id, tcp::socket &sock) : id{id}, sock{sock} {}
     void insert_to_view(unsigned id) {
@@ -99,13 +105,21 @@ struct ClientSlot {
         }
     }
 };
+
+struct WorkerJob {
+    unsigned user_id;
+    unique_ptr<char[]> packet;
+};
+
 class Server {
   private:
     void handle_accept(unsigned user_id);
     void handle_recv(const boost_error &error, const size_t length);
     void handle_recv_from_server(const boost_error &error, const size_t length);
+    void process_packet_from_front_end(unsigned id, char *packet);
     void process_packet(int id, void *buff);
     void process_packet_from_server(char *buff, size_t length);
+    void do_worker(unsigned worker_id);
     void acquire_new_id(unsigned new_id);
     void ProcessLogin(int user_id, char *id_str);
     void ProcessChat(int id, char *mess);
@@ -122,6 +136,8 @@ class Server {
     tcp::socket other_server_recv;
     tcp::socket other_server_send;
     tcp::socket front_end_sock;
+
+    array<SPSCQueue<unsigned>, NUM_WORKER> worker_queue;
 
     char recv_buf[MAX_BUFFER];
     size_t prev_packet_len;
