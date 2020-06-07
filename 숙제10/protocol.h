@@ -127,19 +127,24 @@ struct sf_packet_accept_login {
     static constexpr type type_num = 12;
 };
 
-struct fs_packet_logout {
+struct sf_packet_reject_login {
     using type = char;
     static constexpr type type_num = 13;
 };
 
-struct sf_packet_hand_over {
+struct fs_packet_logout {
     using type = char;
     static constexpr type type_num = 14;
 };
 
-struct fs_packet_forwarding {
+struct sf_packet_hand_over {
     using type = char;
     static constexpr type type_num = 15;
+};
+
+struct fs_packet_forwarding {
+    using type = char;
+    static constexpr type type_num = 16;
 };
 
 struct cs_packet_login {

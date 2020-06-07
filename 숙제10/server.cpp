@@ -101,7 +101,7 @@ void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
 
 // user_num은 32bit unsigned int, user는 id => unsigned int
 template <typename P, typename F>
-void send_packet_all(SOCKETINFO *users, unsigned user_num,
+void send_packet_all(SOCKETINFO **users, unsigned user_num,
                      F &&packet_maker_func) {
     unsigned packet_offset =
         sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
@@ -115,16 +115,16 @@ void send_packet_all(SOCKETINFO *users, unsigned user_num,
     unsigned *user_data = (unsigned *)(packet + sizeof(packet_header));
     *user_data = user_num;
     for (auto i = 0; i < user_num; ++i) {
-        *(user_data + i + 1) = users[i].id;
+        *(user_data + i + 1) = users[i]->id;
     }
 
     packet_maker_func(*(P *)(packet + packet_offset));
 
-    users->sock.async_send(buffer(packet, total_size),
-                           [packet](auto error, auto length) {
-                               delete[] packet;
-                               handle_send(error, length);
-                           });
+    (*users)->sock.async_send(buffer(packet, total_size),
+                              [packet](auto error, auto length) {
+                                  delete[] packet;
+                                  handle_send(error, length);
+                              });
 }
 
 template <typename P, typename F>
@@ -231,31 +231,55 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
         });
     }
 
+    vector<SOCKETINFO *> to_put, to_remove, to_pos;
+
     for (auto new_id : new_view_list) {
-        clients[new_id].then([&client, &old_view_list](auto &other) {
+        clients[new_id].then([&client, &old_view_list, &to_put](auto &other) {
             auto it = old_view_list.find(other.id);
             if (it == old_view_list.end()) {
                 other.insert_to_view(client.id);
                 client.insert_to_view(other.id);
                 send_put_object_packet(client, other);
-                send_put_object_packet(other, client);
+                to_put.emplace_back(&other);
             }
         });
     }
+    send_packet_all<sc_packet_put_object>(
+        to_put.data(), to_put.size(), [&client](sc_packet_put_object &packet) {
+            packet.id = client.id;
+            packet.x = client.x;
+            packet.y = client.y;
+            if (client.is_proxy) {
+                packet.o_type = 2;
+            } else {
+                packet.o_type = 1;
+            }
+        });
 
     for (auto old_id : old_view_list) {
-        clients[old_id].then([&client, &new_view_list](auto &other) {
-            auto it = new_view_list.find(other.id);
-            if (it == new_view_list.end()) {
-                other.erase_from_view(client.id);
-                client.erase_from_view(other.id);
-                send_remove_object_packet(client, other);
-                send_remove_object_packet(other, client);
-            } else {
-                send_pos_packet(other, client);
-            }
-        });
+        clients[old_id].then(
+            [&client, &new_view_list, &to_remove, &to_pos](auto &other) {
+                auto it = new_view_list.find(other.id);
+                if (it == new_view_list.end()) {
+                    other.erase_from_view(client.id);
+                    client.erase_from_view(other.id);
+                    send_remove_object_packet(client, other);
+                    to_remove.emplace_back(&other);
+                } else {
+                    to_pos.emplace_back(&other);
+                }
+            });
     }
+    send_packet_all<sc_packet_remove_object>(
+        to_remove.data(), to_remove.size(),
+        [&client](sc_packet_remove_object &packet) { packet.id = client.id; });
+    send_packet_all<sc_packet_pos>(to_pos.data(), to_pos.size(),
+                                   [&client](sc_packet_pos &packet) {
+                                       packet.id = client.id;
+                                       packet.move_time = client.move_time;
+                                       packet.x = client.x;
+                                       packet.y = client.y;
+                                   });
 
     if (client.is_proxy)
         return;
@@ -533,7 +557,7 @@ void Server::run() {
         th.join();
 }
 
-void Server::handle_accept(unsigned user_id) {
+SOCKETINFO &Server::handle_accept(unsigned user_id) {
     auto new_player =
         create_new_player(this->front_end_sock, user_id, false, server_id);
     auto &slot = clients[new_player->id];
@@ -542,6 +566,8 @@ void Server::handle_accept(unsigned user_id) {
     auto old_user_num = user_num.load(memory_order_relaxed);
     if (old_user_num <= user_id)
         user_num.fetch_add(user_id - old_user_num + 1, memory_order_relaxed);
+
+    return *new_player;
 }
 
 void Server::disconnect(unsigned id) {
@@ -551,12 +577,18 @@ void Server::disconnect(unsigned id) {
     client_slot.is_active.store(false);
     auto &client = client_slot.ptr;
 
+    vector<SOCKETINFO *> near_clients;
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        clients[i].then([&client](auto &other) {
+        clients[i].then([&client, &near_clients](auto &other) {
             if (is_near(other.x, other.y, client->x, client->y))
-                send_remove_object_packet(other, *client);
+                near_clients.emplace_back(&other);
         });
     }
+
+    send_packet_all<sc_packet_remove_object>(
+        near_clients.data(), near_clients.size(),
+        [&client](sc_packet_remove_object &packet) { packet.id = client->id; });
+
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_leave>(
             other_server_send,
@@ -582,17 +614,17 @@ void Server::handle_recv_from_server(const boost_error &error,
 }
 
 void Server::process_packet_from_front_end(unsigned id, char *packet) {
-    // TODO: parsing packet
+    unsigned id = *(unsigned *)(packet + sizeof(packet_header));
     switch (packet[1]) {
     case fs_packet_try_login::type_num: {
-
+        auto &new_player = handle_accept(id);
+        send_packet<sf_packet_accept_login>(new_player, [](auto &_) {});
     } break;
     case fs_packet_logout::type_num: {
-
+        disconnect(id);
     } break;
     case fs_packet_forwarding::type_num: {
-        // TODO: call process_packet function if needed
-
+        process_packet(id, (packet + sizeof(packet_header) + sizeof(unsigned)));
     } break;
     }
 }

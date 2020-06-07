@@ -113,7 +113,7 @@ struct WorkerJob {
 
 class Server {
   private:
-    void handle_accept(unsigned user_id);
+    SOCKETINFO &handle_accept(unsigned user_id);
     void handle_recv(const boost_error &error, const size_t length);
     void handle_recv_from_server(const boost_error &error, const size_t length);
     void process_packet_from_front_end(unsigned id, char *packet);
