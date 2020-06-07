@@ -59,8 +59,6 @@ void handle_send(const boost_error &error, const size_t length) {
 template <typename F>
 void assemble_packet(char *recv_buf, size_t &prev_packet_size,
                      size_t received_bytes, F &&packet_handler) {
-    // TODO: id 배열 읽고 루프 돌면서 packet_handler 호출
-    // - front-end에서 오는 패킷은 size, type, target_id, packet_data 로 이루어져 있음.
     char *p = recv_buf;
     auto remain = received_bytes;
     unsigned packet_size;
@@ -74,7 +72,8 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
             packet_size = p[0];
         unsigned required = packet_size - prev_packet_size;
         if (required <= remain) {
-            packet_handler(id, p, packet_size);
+            unsigned *id = (unsigned *)(p + sizeof(packet_header));
+            packet_handler(*id, p, packet_size);
             remain -= required;
             p += packet_size;
             prev_packet_size = 0;
@@ -399,8 +398,7 @@ SOCKETINFO *create_new_player(tcp::socket &sock, unsigned id, bool is_proxy,
     return create_new_player(sock, id, new_x, new_y, is_proxy, server_id);
 }
 
-void Server::handle_recv(const boost_error &error, const size_t length,
-                         SOCKETINFO *client) {
+void Server::handle_recv(const boost_error &error, const size_t length) {
     if (error) {
         cerr << "Error at recv : " << error.message() << endl;
         exit(-1);
@@ -412,10 +410,9 @@ void Server::handle_recv(const boost_error &error, const size_t length,
                             process_packet(id, packet);
                         });
 
-        front_end_sock.async_read_some(buffer(this->recv_buf, MAX_BUFFER),
-                                       [client, this](auto error, auto length) {
-                                           handle_recv(error, length, client);
-                                       });
+        front_end_sock.async_read_some(
+            buffer(this->recv_buf, MAX_BUFFER),
+            [this](auto error, auto length) { handle_recv(error, length); });
     }
 }
 
@@ -436,25 +433,19 @@ void async_connect_to_other_server(tcp::socket &sock, unsigned short port) {
     });
 }
 
-Server::Server()
+Server::Server(unsigned short port)
     : context{}, acceptor{context}, server_acceptor{context},
       other_server_send{context}, other_server_recv{context}, front_end_sock{
                                                                   context} {
-    auto end_point = tcp::endpoint{tcp::v4(), SERVER_PORT};
+    auto end_point = tcp::endpoint{tcp::v4(), port};
     acceptor.open(end_point.protocol());
-    boost::system::error_code ec;
-    acceptor.bind(end_point, ec);
-    if (ec) {
-        end_point = tcp::endpoint{tcp::v4(), SERVER_PORT + 1};
-        acceptor.bind(end_point);
-        server_id = 1;
-    } else {
-        server_id = 0;
-    }
+    acceptor.bind(end_point);
     acceptor.listen();
 
-    auto other_end_point = tcp::endpoint{
-        tcp::v4(), (unsigned short)(SERVER_PORT + 10 + server_id)};
+    server_id = port - SERVER_PORT;
+
+    auto other_end_point =
+        tcp::endpoint{tcp::v4(), (unsigned short)(port + 10)};
     server_acceptor.open(other_end_point.protocol());
     server_acceptor.bind(other_end_point);
     server_acceptor.listen();
@@ -534,7 +525,7 @@ void Server::handle_recv_from_server(const boost_error &error,
         cerr << "Error at recv from other server: " << error.message() << endl;
     } else if (length > 0) {
         assemble_packet(other_recv_buf, other_prev_len, length,
-                        [this](char *packet, unsigned len) {
+                        [this](auto _, char *packet, unsigned len) {
                             process_packet_from_server(packet, len);
                         });
 
@@ -549,26 +540,26 @@ void Server::handle_recv_from_server(const boost_error &error,
 void Server::process_packet(int id, void *buff) {
     char *packet = reinterpret_cast<char *>(buff);
     switch (packet[1]) {
-    case CS_LOGIN: {
+    case cs_packet_login::type_num: {
         cs_packet_login *login_packet =
             reinterpret_cast<cs_packet_login *>(packet);
         ProcessLogin(id, login_packet->id);
     } break;
-    case CS_MOVE: {
+    case cs_packet_move::type_num: {
         cs_packet_move *move_packet =
             reinterpret_cast<cs_packet_move *>(packet);
         ProcessMove(id, move_packet->direction, move_packet->move_time);
     } break;
-    case CS_ATTACK:
+    case cs_packet_attack::type_num:
         break;
-    case CS_CHAT: {
+    case cs_packet_chat::type_num: {
         cs_packet_chat *chat_packet =
             reinterpret_cast<cs_packet_chat *>(packet);
         ProcessChat(id, chat_packet->chat_str);
     } break;
-    case CS_LOGOUT:
+    case cs_packet_logout::type_num:
         break;
-    case CS_TELEPORT:
+    case cs_packet_teleport::type_num:
         ProcessMove(id, 99, 0);
         break;
     default:
@@ -580,7 +571,7 @@ void Server::process_packet(int id, void *buff) {
 
 void Server::process_packet_from_server(char *buff, size_t length) {
     switch (buff[1]) {
-    case SS_PUT: {
+    case ss_packet_put::type_num: {
         ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(buff);
         auto &client_slot = clients[put_packet->id];
         client_slot.then_else(
@@ -610,7 +601,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             });
         }
     } break;
-    case SS_LEAVE: {
+    case ss_packet_leave::type_num: {
         ss_packet_leave *leave_packet = (ss_packet_leave *)buff;
         auto &client_slot = clients[leave_packet->id];
         client_slot.then([&client_slot](auto &old_client) {
@@ -624,7 +615,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             }
         });
     } break;
-    case SS_MOVE: {
+    case ss_packet_move::type_num: {
         ss_packet_move *move_packet = (ss_packet_move *)buff;
         auto &client_slot = clients[move_packet->id];
         client_slot.then([&client_slot, move_packet, this](auto &cl) {

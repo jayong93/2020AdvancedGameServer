@@ -102,8 +102,7 @@ struct ClientSlot {
 class Server {
   private:
     void handle_accept(unsigned user_id);
-    void handle_recv(const boost_error &error, const size_t length,
-                     SOCKETINFO *client);
+    void handle_recv(const boost_error &error, const size_t length);
     void handle_recv_from_server(const boost_error &error, const size_t length);
     void process_packet(int id, void *buff);
     void process_packet_from_server(char *buff, size_t length);
@@ -131,7 +130,7 @@ class Server {
     size_t other_prev_len{0};
 
   public:
-    Server();
+    Server(unsigned short port);
     void run();
 };
 #endif /* A5F36F66_1CD6_49C1_9533_263A9B883FE0 */
