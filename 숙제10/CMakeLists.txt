@@ -25,3 +25,4 @@ set(CMAKE_CXX_FLAGS_RELEASE "-DNDEBUG -Ofast")
 endif()
 
 add_executable(${OUTPUT_NAME} ${SRC_FILES})
+add_executable(${OUTPUT_NAME}_front_end front_end.cpp)

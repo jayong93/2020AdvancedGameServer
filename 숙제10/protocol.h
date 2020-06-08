@@ -12,25 +12,6 @@ constexpr unsigned MAX_STR_LEN = 50;
 #define SERVER_PORT 9000
 #define NUM_NPC 100
 
-#define CS_LOGIN 1
-#define CS_MOVE 2
-#define CS_ATTACK 3
-#define CS_CHAT 4
-#define CS_LOGOUT 5
-#define CS_TELEPORT 6
-
-#define SC_LOGIN_OK 1
-#define SC_LOGIN_FAIL 2
-#define SC_POS 3
-#define SC_PUT_OBJECT 4
-#define SC_REMOVE_OBJECT 5
-#define SC_CHAT 6
-#define SC_STAT_CHANGE 7
-
-#define SS_PUT 8
-#define SS_LEAVE 9
-#define SS_MOVE 10
-
 #pragma pack(push, 1)
 
 struct packet_header {
@@ -93,22 +74,34 @@ struct sc_packet_stat_change {
 
 struct ss_packet_put {
     using type = char;
-    static constexpr type type_num = 8;
+    static constexpr type type_num = 1;
     unsigned id;
     short x, y;
 };
 
 struct ss_packet_leave {
     using type = char;
-    static constexpr type type_num = 9;
+    static constexpr type type_num = 2;
     unsigned id;
 };
 
 struct ss_packet_move {
     using type = char;
-    static constexpr type type_num = 10;
+    static constexpr type type_num = 3;
     unsigned id;
     short x, y;
+};
+
+struct ss_packet_hand_over {
+    using type = char;
+    static constexpr type type_num = 4;
+    unsigned id;
+};
+
+struct ss_packet_hand_overed {
+    using type = char;
+    static constexpr type type_num = 5;
+    unsigned id;
 };
 
 // - try_login: front-end가 server에게. 로그인 시도하는 id가 담겨있음
@@ -142,9 +135,14 @@ struct sf_packet_hand_over {
     static constexpr type type_num = 15;
 };
 
-struct fs_packet_forwarding {
+struct fs_packet_hand_overed {
     using type = char;
     static constexpr type type_num = 16;
+};
+
+struct fs_packet_forwarding {
+    using type = char;
+    static constexpr type type_num = 17;
 };
 
 struct cs_packet_login {

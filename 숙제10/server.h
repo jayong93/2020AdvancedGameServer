@@ -22,9 +22,7 @@ struct ViewEvent {
     unsigned id;
 };
 
-// TODO: client에 있는 recv buf와 prev_packet_size를 server로 옮기기
-// TODO: 모든 send 함수들을 server 구조체의 method로 바꾸거나, socket을 받아서
-// 전송하도록 변경
+enum ClientStatus { Normal, HandOvering, HandOvered };
 
 struct SOCKETINFO {
     unsigned id;
@@ -35,8 +33,10 @@ struct SOCKETINFO {
     short x, y;
     int move_time;
     bool is_in_edge{false};
+    atomic<ClientStatus> status{Normal};
 
     SPSCQueue<unique_ptr<char[]>> pending_packets;
+    SPSCQueue<unique_ptr<char[]>> pending_while_hand_over_packets;
     atomic_bool is_handling{false};
 
     SOCKETINFO(unsigned id, tcp::socket &sock) : id{id}, sock{sock} {}
@@ -116,15 +116,15 @@ class Server {
     SOCKETINFO &handle_accept(unsigned user_id);
     void handle_recv(const boost_error &error, const size_t length);
     void handle_recv_from_server(const boost_error &error, const size_t length);
-    void process_packet_from_front_end(unsigned id, char *packet);
-    void process_packet(int id, void *buff);
+    bool process_packet_from_front_end(unsigned id, char *packet);
+    bool process_packet(int id, void *buff);
     void process_packet_from_server(char *buff, size_t length);
     void do_worker(unsigned worker_id);
     void acquire_new_id(unsigned new_id);
     void ProcessLogin(int user_id, char *id_str);
     void ProcessChat(int id, char *mess);
-    void ProcessMove(int id, unsigned char dir, unsigned move_time);
-    void ProcessMove(SOCKETINFO &cl, short new_x, short new_y,
+    bool ProcessMove(int id, unsigned char dir, unsigned move_time);
+    bool ProcessMove(SOCKETINFO &cl, short new_x, short new_y,
                      unsigned move_time);
 
     void disconnect(unsigned id);

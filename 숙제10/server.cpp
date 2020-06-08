@@ -14,22 +14,28 @@ constexpr unsigned VIEW_RANGE = 6;
 static ClientSlot clients[MAX_USER_NUM];
 static atomic_uint user_num{0};
 
-enum MoveType { None, EnterToEdge, LeaveFromBuffer };
+enum MoveType { None, EnterToEdge, LeaveFromBuffer, HandOver };
 
 MoveType check_move_type(short old_y, short new_y, unsigned server_id) {
-    short buffer_y;
+    short buffer_y, other_buffer_y;
     if (server_id == 0) {
         buffer_y = WORLD_HEIGHT / 2 - (VIEW_RANGE + 1);
+        other_buffer_y = WORLD_HEIGHT / 2 + VIEW_RANGE;
         if (old_y <= buffer_y && buffer_y < new_y)
             return EnterToEdge;
         if (buffer_y <= old_y && new_y < buffer_y)
             return LeaveFromBuffer;
+        if (old_y <= other_buffer_y && other_buffer_y < new_y)
+            return HandOver;
     } else {
         buffer_y = WORLD_HEIGHT / 2 + VIEW_RANGE;
+        other_buffer_y = WORLD_HEIGHT / 2 - (VIEW_RANGE + 1);
         if (buffer_y <= old_y && new_y < buffer_y)
             return EnterToEdge;
         if (old_y <= buffer_y && buffer_y < new_y)
             return LeaveFromBuffer;
+        if (other_buffer_y <= old_y && new_y < other_buffer_y)
+            return HandOver;
     }
 
     return None;
@@ -128,6 +134,12 @@ void send_packet_all(SOCKETINFO **users, unsigned user_num,
 }
 
 template <typename P, typename F>
+unique_ptr<char[]> make_packet(unsigned id, F &&packet_maker_func) {
+    unsigned total_size = sizeof(packet_header) + sizeof(unsigned) + sizeof(P);
+    // TODO: packet 만드는 함수 완성
+}
+
+template <typename P, typename F>
 void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
     unsigned total_size = sizeof(packet_header) + sizeof(P);
     char *buf = new char[total_size];
@@ -210,7 +222,7 @@ void send_chat_packet(SOCKETINFO &client, int teller, char *mess) {
     if (!client.is_proxy)
         send_packet<sc_packet_chat>(client, maker);
 }
-void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
+bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                          unsigned move_time) {
     MoveType move_type = check_move_type(client.y, new_y, server_id);
 
@@ -282,7 +294,12 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                                    });
 
     if (client.is_proxy)
-        return;
+        return false;
+
+    if (move_type == HandOver) {
+        client.is_proxy = true;
+        return true;
+    }
 
     if (client.is_in_edge == false && move_type == EnterToEdge) {
         client.is_in_edge = true;
@@ -307,7 +324,7 @@ void Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
     }
 }
 
-void Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
+bool Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
     auto &client_slot = clients[id];
     if (!client_slot)
         return;
@@ -346,7 +363,7 @@ void Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
             ;
     }
 
-    ProcessMove(*client, x, y, move_time);
+    return ProcessMove(*client, x, y, move_time);
 }
 
 void Server::ProcessChat(int id, char *mess) {
@@ -487,10 +504,12 @@ void Server::do_worker(unsigned worker_id) {
         auto user_id = *queue.deq();
 
         clients[user_id].then([this, user_id](SOCKETINFO &cl) {
+            bool is_hand_overed = false;
             auto pending_len = cl.pending_packets.size();
             for (auto i = 0; i < pending_len; ++i) {
                 auto packet = *cl.pending_packets.deq();
-                this->process_packet_from_front_end(user_id, packet.get());
+                is_hand_overed =
+                    this->process_packet_from_front_end(user_id, packet.get());
             }
         });
 
@@ -613,7 +632,7 @@ void Server::handle_recv_from_server(const boost_error &error,
     }
 }
 
-void Server::process_packet_from_front_end(unsigned id, char *packet) {
+bool Server::process_packet_from_front_end(unsigned id, char *packet) {
     unsigned id = *(unsigned *)(packet + sizeof(packet_header));
     switch (packet[1]) {
     case fs_packet_try_login::type_num: {
@@ -624,12 +643,14 @@ void Server::process_packet_from_front_end(unsigned id, char *packet) {
         disconnect(id);
     } break;
     case fs_packet_forwarding::type_num: {
-        process_packet(id, (packet + sizeof(packet_header) + sizeof(unsigned)));
+        return process_packet(
+            id, (packet + sizeof(packet_header) + sizeof(unsigned)));
     } break;
     }
+    return false;
 }
 
-void Server::process_packet(int id, void *buff) {
+bool Server::process_packet(int id, void *buff) {
     char *packet = reinterpret_cast<char *>(buff);
     switch (packet[1]) {
     case cs_packet_login::type_num: {
@@ -640,7 +661,7 @@ void Server::process_packet(int id, void *buff) {
     case cs_packet_move::type_num: {
         cs_packet_move *move_packet =
             reinterpret_cast<cs_packet_move *>(packet);
-        ProcessMove(id, move_packet->direction, move_packet->move_time);
+        return ProcessMove(id, move_packet->direction, move_packet->move_time);
     } break;
     case cs_packet_attack::type_num:
         break;
@@ -659,6 +680,7 @@ void Server::process_packet(int id, void *buff) {
         while (true)
             ;
     }
+    return false;
 }
 
 void Server::process_packet_from_server(char *buff, size_t length) {
@@ -710,9 +732,16 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     case ss_packet_move::type_num: {
         ss_packet_move *move_packet = (ss_packet_move *)buff;
         auto &client_slot = clients[move_packet->id];
-        client_slot.then([&client_slot, move_packet, this](auto &cl) {
+        client_slot.then([move_packet, this](auto &cl) {
             ProcessMove(cl, move_packet->x, move_packet->y, 0);
         });
     } break;
+    case ss_packet_hand_over::type_num: {
+        ss_packet_hand_over *hand_over_packet = (ss_packet_hand_over *)buff;
+        auto &client_slot = clients[hand_over_packet->id];
+        client_slot.then([this](auto &cl) { cl.is_proxy = false; });
+    } break;
     }
+    // TODO: hand over 시작하면 hand_overing으로 변경
+    // TODO: hand over 중에 forward된 packet들을 다 받고 나면 HandOvered로 변경
 }
