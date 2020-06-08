@@ -4,8 +4,8 @@ constexpr unsigned MAX_BUFFER = 1024;
 constexpr unsigned MAX_ID_LEN = 50;
 constexpr unsigned MAX_STR_LEN = 50;
 
-#define WORLD_WIDTH 20
-#define WORLD_HEIGHT 40
+#define WORLD_WIDTH 400
+#define WORLD_HEIGHT 400
 
 #define NPC_ID_START 20000
 
@@ -92,7 +92,7 @@ struct ss_packet_move {
     short x, y;
 };
 
-struct ss_packet_hand_over {
+struct ss_packet_forwarding {
     using type = char;
     static constexpr type type_num = 4;
     unsigned id;

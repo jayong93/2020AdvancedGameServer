@@ -35,8 +35,8 @@ struct SOCKETINFO {
     bool is_in_edge{false};
     atomic<ClientStatus> status{Normal};
 
-    SPSCQueue<unique_ptr<char[]>> pending_packets;
-    SPSCQueue<unique_ptr<char[]>> pending_while_hand_over_packets;
+    MPSCQueue<unique_ptr<char[]>> pending_packets;
+    MPSCQueue<unique_ptr<char[]>> pending_while_hand_over_packets;
     atomic_bool is_handling{false};
 
     SOCKETINFO(unsigned id, tcp::socket &sock) : id{id}, sock{sock} {}
@@ -62,6 +62,34 @@ struct SOCKETINFO {
         unique_lock<mutex> lg{view_list_lock};
         update_view_from_msg();
         return view_list;
+    }
+
+    void end_hand_over(tcp::socket &send_sock) {
+        auto maker = [this, &send_sock](unique_ptr<char[]> packet) {
+            unsigned total_size = sizeof(ss_packet_forwarding) +
+                                  sizeof(packet_header) + packet[0];
+            send_packet_to_server(
+                send_sock, total_size,
+                [this, total_size, &real_packet{packet}](char *packet) {
+                    packet_header *header = (packet_header *)packet;
+                    header->size = total_size;
+                    header->type = ss_packet_forwarding::type_num;
+
+                    packet += sizeof(packet_header);
+                    ss_packet_forwarding *outer_packet =
+                        (ss_packet_forwarding *)packet;
+                    outer_packet->id = id;
+
+                    packet += sizeof(ss_packet_forwarding);
+                    memcpy(packet, real_packet.get(), real_packet[0]);
+                });
+        };
+        this->pending_while_hand_over_packets.for_each(maker);
+        this->pending_packets.for_each(maker);
+        send_packet_to_server<ss_packet_hand_overed>(
+            send_sock,
+            [this](ss_packet_hand_overed &packet) { packet.id = id; });
+        this->status.store(Normal, std::memory_order_release);
     }
 
   private:
@@ -116,7 +144,8 @@ class Server {
     SOCKETINFO &handle_accept(unsigned user_id);
     void handle_recv(const boost_error &error, const size_t length);
     void handle_recv_from_server(const boost_error &error, const size_t length);
-    bool process_packet_from_front_end(unsigned id, char *packet);
+    bool process_packet_from_front_end(unsigned id,
+                                       unique_ptr<char[]> &&packet);
     bool process_packet(int id, void *buff);
     void process_packet_from_server(char *buff, size_t length);
     void do_worker(unsigned worker_id);

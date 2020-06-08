@@ -79,6 +79,14 @@ struct MPSCQueue {
     std::optional<T> deq();
     void enq(const T &val);
     void enq(T &&val);
+    template <typename F> void for_each(F &&func) {
+        while (true) {
+            auto el = this->deq();
+            if (!el)
+                return;
+            func(std::move(*el));
+        }
+    }
     template <typename... Param> void emplace(Param &&... args);
     bool is_empty() const { return head->next.load() == nullptr; }
     const T &peek() const;

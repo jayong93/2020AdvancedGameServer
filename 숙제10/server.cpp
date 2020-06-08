@@ -9,7 +9,9 @@ using namespace std;
 
 constexpr unsigned MAX_USER_NUM = 20000;
 constexpr unsigned INVALID_ID = -1;
-constexpr unsigned VIEW_RANGE = 6;
+constexpr unsigned VIEW_RANGE = 7;
+constexpr unsigned EDGE_RANGE = 4;
+constexpr unsigned BUFFER_RANGE = 2;
 
 static ClientSlot clients[MAX_USER_NUM];
 static atomic_uint user_num{0};
@@ -19,18 +21,18 @@ enum MoveType { None, EnterToEdge, LeaveFromBuffer, HandOver };
 MoveType check_move_type(short old_y, short new_y, unsigned server_id) {
     short buffer_y, other_buffer_y;
     if (server_id == 0) {
-        buffer_y = WORLD_HEIGHT / 2 - (VIEW_RANGE + 1);
-        other_buffer_y = WORLD_HEIGHT / 2 + VIEW_RANGE;
-        if (old_y <= buffer_y && buffer_y < new_y)
+        buffer_y = WORLD_HEIGHT / 2 - (EDGE_RANGE + BUFFER_RANGE);
+        other_buffer_y = WORLD_HEIGHT / 2 + (EDGE_RANGE + BUFFER_RANGE - 1);
+        if (old_y < (buffer_y + BUFFER_RANGE) && (buffer_y + BUFFER_RANGE) <= new_y)
             return EnterToEdge;
         if (buffer_y <= old_y && new_y < buffer_y)
             return LeaveFromBuffer;
         if (old_y <= other_buffer_y && other_buffer_y < new_y)
             return HandOver;
     } else {
-        buffer_y = WORLD_HEIGHT / 2 + VIEW_RANGE;
-        other_buffer_y = WORLD_HEIGHT / 2 - (VIEW_RANGE + 1);
-        if (buffer_y <= old_y && new_y < buffer_y)
+        buffer_y = WORLD_HEIGHT / 2 + (EDGE_RANGE + BUFFER_RANGE - 1);
+        other_buffer_y = WORLD_HEIGHT / 2 - (EDGE_RANGE + BUFFER_RANGE);
+        if ((buffer_y - BUFFER_RANGE) < old_y && new_y <= (buffer_y - BUFFER_RANGE))
             return EnterToEdge;
         if (old_y <= buffer_y && buffer_y < new_y)
             return LeaveFromBuffer;
@@ -142,20 +144,32 @@ unique_ptr<char[]> make_packet(unsigned id, F &&packet_maker_func) {
 template <typename P, typename F>
 void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
     unsigned total_size = sizeof(packet_header) + sizeof(P);
-    char *buf = new char[total_size];
 
-    packet_header *header = (packet_header *)packet;
-    header->size = total_size;
-    header->type = P::type_num;
+    send_packet_to_server(
+        sock, total_size,
+        [f{move(packet_maker_func)}, total_size](char *packet) {
+            packet_header *header = (packet_header *)packet;
+            header->size = total_size;
+            header->type = P::type_num;
 
-    packet_maker_func(*(P *)(buf + sizeof(packet_header)));
+            f(*(P *)(packet + sizeof(packet_header)));
+        });
+}
 
-    sock.async_send(buffer(buf, total_size), [buf](auto error, auto length) {
-        delete[] buf;
-        if (error) {
-            cerr << "Error at send to server : " << error.message() << endl;
-        }
-    });
+template <typename F>
+void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
+                           F &&packet_maker_func) {
+    char *packet = new char[packet_size];
+
+    packet_maker_func(packet);
+
+    sock.async_send(
+        buffer(packet, packet_size), [packet](auto error, auto length) {
+            delete[] packet;
+            if (error) {
+                cerr << "Error at send to server : " << error.message() << endl;
+            }
+        });
 }
 
 void send_login_ok_packet(SOCKETINFO &client, unsigned id) {
@@ -296,11 +310,6 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
     if (client.is_proxy)
         return false;
 
-    if (move_type == HandOver) {
-        client.is_proxy = true;
-        return true;
-    }
-
     if (client.is_in_edge == false && move_type == EnterToEdge) {
         client.is_in_edge = true;
         send_packet_to_server<ss_packet_put>(this->other_server_send,
@@ -322,6 +331,11 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                                                   p.y = client.y;
                                               });
     }
+
+    if (move_type == HandOver) {
+        client.is_proxy = true;
+        return true;
+    }
 }
 
 bool Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
@@ -337,11 +351,11 @@ bool Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
     short y = client->y;
     switch (dir) {
     case D_UP:
-        if (y > (WORLD_HEIGHT / 2) * server_id)
+        if (y > 0)
             y--;
         break;
     case D_DOWN:
-        if (y < (WORLD_HEIGHT / 2) * (server_id + 1) - 1)
+        if (y < WORLD_HEIGHT - 1)
             y++;
         break;
     case D_LEFT:
@@ -450,7 +464,17 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
                             char *buf = new char[len];
                             memcpy(buf, packet, len);
                             clients[id].then([buf](SOCKETINFO &cl) {
-                                cl.pending_packets.emplace(make_unique(buf));
+                                switch (cl.status.load(memory_order_acquire)) {
+                                case Normal:
+                                case HandOvering:
+                                    cl.pending_packets.emplace(
+                                        make_unique(buf));
+                                    break;
+                                case HandOvered:
+                                    cl.pending_while_hand_over_packets.emplace(
+                                        make_unique(buf));
+                                    break;
+                                }
                             })
                         });
 
@@ -504,12 +528,25 @@ void Server::do_worker(unsigned worker_id) {
         auto user_id = *queue.deq();
 
         clients[user_id].then([this, user_id](SOCKETINFO &cl) {
+            if (cl.status.load(memory_order_acquire) == Normal) {
+                cl.pending_while_hand_over_packets.for_each(
+                    [this, user_id](unique_ptr<char[]> packet) {
+                        this->process_packet_from_front_end(user_id,
+                                                            move(packet));
+                    });
+            }
             bool is_hand_overed = false;
             auto pending_len = cl.pending_packets.size();
             for (auto i = 0; i < pending_len; ++i) {
                 auto packet = *cl.pending_packets.deq();
                 is_hand_overed =
-                    this->process_packet_from_front_end(user_id, packet.get());
+                    this->process_packet_from_front_end(user_id, move(packet));
+                if (is_hand_overed) {
+                    cl.status.store(HandOvering, memory_order_release);
+                    send_packet<sf_packet_hand_over>(
+                        cl, [](sf_packet_hand_over &packet) {});
+                    is_hand_overed = false;
+                }
             }
         });
 
@@ -536,7 +573,8 @@ void Server::run() {
         while (true) {
             for (unsigned i = 0; i < user_num.load(memory_order_acquire); ++i) {
                 clients[i].then([this, &next_worker_id, i](SOCKETINFO &cl) {
-                    if (cl.pending_packets.is_empty())
+                    if (cl.pending_packets.is_empty() &&
+                        cl.pending_while_hand_over_packets.is_empty())
                         return;
 
                     if (cl.is_handling.load(memory_order_acquire) == false) {
@@ -632,19 +670,47 @@ void Server::handle_recv_from_server(const boost_error &error,
     }
 }
 
-bool Server::process_packet_from_front_end(unsigned id, char *packet) {
-    unsigned id = *(unsigned *)(packet + sizeof(packet_header));
+bool Server::process_packet_from_front_end(unsigned id,
+                                           unique_ptr<char[]> &&packet) {
+    unsigned id = *(unsigned *)(packet.get() + sizeof(packet_header));
     switch (packet[1]) {
     case fs_packet_try_login::type_num: {
         auto &new_player = handle_accept(id);
         send_packet<sf_packet_accept_login>(new_player, [](auto &_) {});
     } break;
     case fs_packet_logout::type_num: {
-        disconnect(id);
+        clients[id].then([this, packet{move(packet)}](SOCKETINFO &cl) {
+            if (cl.status.load(memory_order_acquire) == HandOvering) {
+                cl.pending_while_hand_over_packets.emplace(move(packet));
+                cl.end_hand_over(this->other_server_send);
+            } else {
+                disconnect(cl.id);
+            }
+        });
+    } break;
+    case fs_packet_hand_overed::type_num: {
+        clients[id].then([this](SOCKETINFO &cl) {
+            auto status = cl.status.load(memory_order_acquire);
+            if (status == Normal) {
+                cl.is_proxy = false;
+                cl.status.store(HandOvered);
+            } else if (status == HandOvering) {
+                cl.end_hand_over(this->other_server_send);
+            }
+        });
     } break;
     case fs_packet_forwarding::type_num: {
-        return process_packet(
-            id, (packet + sizeof(packet_header) + sizeof(unsigned)));
+        bool result = false;
+        clients[id].then([&result, this, id,
+                          packet{move(packet)}](SOCKETINFO &cl) {
+            if (cl.status.load(memory_order_acquire) != Normal) {
+                cl.pending_while_hand_over_packets.emplace(move(packet));
+            } else
+                result =
+                    process_packet(id, (packet.get() + sizeof(packet_header) +
+                                        sizeof(unsigned)));
+        });
+        return result;
     } break;
     }
     return false;
@@ -736,12 +802,23 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             ProcessMove(cl, move_packet->x, move_packet->y, 0);
         });
     } break;
-    case ss_packet_hand_over::type_num: {
-        ss_packet_hand_over *hand_over_packet = (ss_packet_hand_over *)buff;
-        auto &client_slot = clients[hand_over_packet->id];
-        client_slot.then([this](auto &cl) { cl.is_proxy = false; });
+    case ss_packet_forwarding::type_num: {
+        ss_packet_forwarding *f_packet = (ss_packet_forwarding *)buff;
+        clients[f_packet->id].then([buff](SOCKETINFO &cl) {
+            if (cl.is_proxy == true)
+                cl.is_proxy = false;
+            char *real_packet =
+                (buff + sizeof(packet_header) + sizeof(ss_packet_forwarding));
+            unique_ptr<char[]> new_packet(new char[real_packet[0]]);
+            memcpy(new_packet.get(), real_packet, real_packet[0]);
+            cl.pending_packets.emplace(move(new_packet));
+        });
+    } break;
+    case ss_packet_hand_overed::type_num: {
+        ss_packet_hand_overed *packet = (ss_packet_hand_overed *)buff;
+        clients[packet->id].then([](SOCKETINFO &cl) {
+            cl.status.store(Normal);
+        });
     } break;
     }
-    // TODO: hand over 시작하면 hand_overing으로 변경
-    // TODO: hand over 중에 forward된 packet들을 다 받고 나면 HandOvered로 변경
 }
