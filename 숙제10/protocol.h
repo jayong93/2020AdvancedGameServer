@@ -1,6 +1,6 @@
 #pragma once
 
-constexpr unsigned MAX_BUFFER = 1024;
+constexpr unsigned MAX_BUFFER = 1024 * 100;
 constexpr unsigned MAX_ID_LEN = 50;
 constexpr unsigned MAX_STR_LEN = 50;
 
@@ -118,6 +118,11 @@ struct fs_packet_try_login {
 struct sf_packet_accept_login {
     using type = char;
     static constexpr type type_num = 12;
+    int id;
+    short x, y;
+    short hp;
+    short level;
+    int exp;
 };
 
 struct sf_packet_reject_login {

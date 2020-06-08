@@ -23,7 +23,8 @@ MoveType check_move_type(short old_y, short new_y, unsigned server_id) {
     if (server_id == 0) {
         buffer_y = WORLD_HEIGHT / 2 - (EDGE_RANGE + BUFFER_RANGE);
         other_buffer_y = WORLD_HEIGHT / 2 + (EDGE_RANGE + BUFFER_RANGE - 1);
-        if (old_y < (buffer_y + BUFFER_RANGE) && (buffer_y + BUFFER_RANGE) <= new_y)
+        if (old_y < (buffer_y + BUFFER_RANGE) &&
+            (buffer_y + BUFFER_RANGE) <= new_y)
             return EnterToEdge;
         if (buffer_y <= old_y && new_y < buffer_y)
             return LeaveFromBuffer;
@@ -32,7 +33,8 @@ MoveType check_move_type(short old_y, short new_y, unsigned server_id) {
     } else {
         buffer_y = WORLD_HEIGHT / 2 + (EDGE_RANGE + BUFFER_RANGE - 1);
         other_buffer_y = WORLD_HEIGHT / 2 - (EDGE_RANGE + BUFFER_RANGE);
-        if ((buffer_y - BUFFER_RANGE) < old_y && new_y <= (buffer_y - BUFFER_RANGE))
+        if ((buffer_y - BUFFER_RANGE) < old_y &&
+            new_y <= (buffer_y - BUFFER_RANGE))
             return EnterToEdge;
         if (old_y <= buffer_y && buffer_y < new_y)
             return LeaveFromBuffer;
@@ -133,12 +135,6 @@ void send_packet_all(SOCKETINFO **users, unsigned user_num,
                                   delete[] packet;
                                   handle_send(error, length);
                               });
-}
-
-template <typename P, typename F>
-unique_ptr<char[]> make_packet(unsigned id, F &&packet_maker_func) {
-    unsigned total_size = sizeof(packet_header) + sizeof(unsigned) + sizeof(P);
-    // TODO: packet 만드는 함수 완성
 }
 
 template <typename P, typename F>
@@ -510,7 +506,7 @@ Server::Server(unsigned short port)
     acceptor.bind(end_point);
     acceptor.listen();
 
-    server_id = port - SERVER_PORT;
+    server_id = port - SERVER_PORT - 1;
 
     auto other_end_point =
         tcp::endpoint{tcp::v4(), (unsigned short)(port + 10)};
@@ -676,7 +672,15 @@ bool Server::process_packet_from_front_end(unsigned id,
     switch (packet[1]) {
     case fs_packet_try_login::type_num: {
         auto &new_player = handle_accept(id);
-        send_packet<sf_packet_accept_login>(new_player, [](auto &_) {});
+        send_packet<sf_packet_accept_login>(
+            new_player, [&new_player](sf_packet_accept_login &packet) {
+                packet.id = new_player.id;
+                packet.x = new_player.x;
+                packet.y = new_player.y;
+                packet.hp = 100;
+                packet.level = 1;
+                packet.exp = 0;
+            });
     } break;
     case fs_packet_logout::type_num: {
         clients[id].then([this, packet{move(packet)}](SOCKETINFO &cl) {
@@ -816,9 +820,8 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     } break;
     case ss_packet_hand_overed::type_num: {
         ss_packet_hand_overed *packet = (ss_packet_hand_overed *)buff;
-        clients[packet->id].then([](SOCKETINFO &cl) {
-            cl.status.store(Normal);
-        });
+        clients[packet->id].then(
+            [](SOCKETINFO &cl) { cl.status.store(Normal); });
     } break;
     }
 }
