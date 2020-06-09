@@ -110,21 +110,6 @@ struct ss_packet_hand_overed {
 // - hand_over: server가 front-end와 다른 server에게. 다른 서버는 is_proxy를 바꾸고, front-end는 담당 서버 변경(기존 소켓 disconnect 후 새로운 서버에 connect)
 // - forwarding_packet: 전체 사이즈 + forwarding_packet_type + 대상 id + 실제 패킷(size, type 포함)
 
-struct fs_packet_try_login {
-    using type = char;
-    static constexpr type type_num = 11;
-};
-
-struct sf_packet_accept_login {
-    using type = char;
-    static constexpr type type_num = 12;
-    int id;
-    short x, y;
-    short hp;
-    short level;
-    int exp;
-};
-
 struct sf_packet_reject_login {
     using type = char;
     static constexpr type type_num = 13;

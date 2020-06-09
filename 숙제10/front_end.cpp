@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include <atomic>
 #include <boost/asio.hpp>
 #include <iostream>
 #include <thread>
@@ -10,50 +11,12 @@ using namespace boost::asio::ip;
 using boost_error = boost::system::error_code;
 
 constexpr unsigned MAX_USER_NUM = 20000;
+constexpr unsigned MAX_CLIENT_BUF = 1024;
 
 io_context context;
 
-struct Client {
-    tcp::socket socket;
-    tcp::socket *server_socket;
-    unsigned id;
-
-    Client(tcp::socket &&sock, tcp::socket &server_sock, unsigned id)
-        : socket{move(sock)}, server_socket{&server_sock}, id{id} {}
-};
-
-Client clients[20000];
-
-template <typename F>
-void assemble_packet(char *recv_buf, unsigned &prev_packet_size,
-                     size_t received_bytes, F &&packet_handler) {
-    char *p = recv_buf;
-    auto remain = received_bytes;
-    unsigned packet_size;
-    if (0 == prev_packet_size)
-        packet_size = 0;
-    else
-        packet_size = p[0];
-
-    while (remain > 0) {
-        if (0 == packet_size)
-            packet_size = p[0];
-        unsigned required = packet_size - prev_packet_size;
-        if (required <= remain) {
-            unsigned *id_num = (unsigned *)(p + sizeof(packet_header));
-            packet_handler(p[0], p[1], *id_num, id_num + 1,
-                           (char *)(id_num + 1 + *id_num));
-            remain -= required;
-            p += packet_size;
-            prev_packet_size = 0;
-            packet_size = 0;
-        } else {
-            memmove(recv_buf, p, remain);
-            prev_packet_size += remain;
-            break;
-        }
-    }
-}
+struct Client;
+Client *clients[20000];
 
 template <typename F>
 void send_packet_to_client(unsigned id, char packet_size, char packet_type,
@@ -66,7 +29,7 @@ void send_packet_to_client(unsigned id, char packet_size, char packet_type,
 
     packet_maker_func(packet + sizeof(packet_header));
 
-    clients[id].socket.async_send(
+    clients[id]->socket.async_send(
         buffer(packet, packet_size), [packet](auto error, auto length) {
             delete[] packet;
             if (error) {
@@ -77,8 +40,9 @@ void send_packet_to_client(unsigned id, char packet_size, char packet_type,
 
 template <typename P, typename F>
 void send_packet_to_server(tcp::socket &sock, unsigned id,
-                           F &&packet_maker_func) {
-    unsigned packet_size = sizeof(packet_header) + sizeof(unsigned) + sizeof(P);
+                           unsigned real_packet_size, F &&packet_maker_func) {
+    unsigned packet_size =
+        sizeof(packet_header) + sizeof(unsigned) + sizeof(P) + real_packet_size;
     char *packet = new char[packet_size];
 
     packet_header *header = (packet_header *)packet;
@@ -98,6 +62,76 @@ void send_packet_to_server(tcp::socket &sock, unsigned id,
         });
 }
 
+struct Client {
+    tcp::socket socket;
+    tcp::socket *server_socket;
+    unsigned id;
+    char recv_buf[MAX_CLIENT_BUF];
+    unsigned prev_recv_len{0};
+
+    Client(tcp::socket &&sock, tcp::socket &server_sock, unsigned id)
+        : socket{move(sock)}, server_socket{&server_sock}, id{id} {}
+
+    void recv() {
+        socket.async_read_some(
+            buffer(recv_buf + prev_recv_len, MAX_CLIENT_BUF - prev_recv_len),
+            [this](auto error, auto len) { handle_recv(error, len); });
+    }
+
+    void handle_recv(boost_error error, size_t received_bytes) {
+        if (error) {
+            cerr << "Error at handle_recv of a client(#" << id
+                 << ") : " << error.message() << endl;
+            send_packet_to_server<fs_packet_logout>(*server_socket, id, 0,
+                                                    [](auto &_) {});
+        } else if (received_bytes == 0) {
+            send_packet_to_server<fs_packet_logout>(*server_socket, id, 0,
+                                                    [](auto &_) {});
+        }
+
+        assemble_packet(
+            recv_buf, prev_recv_len, received_bytes,
+            [this](char *packet, unsigned packet_size) {
+                send_packet_to_server<fs_packet_forwarding>(
+                    *server_socket, id, packet_size,
+                    [real_packet{packet}, packet_size](fs_packet_forwarding &packet) {
+                        memcpy(&packet, real_packet, packet_size);
+                    });
+            });
+        recv();
+    }
+
+    template <typename F>
+    void assemble_packet(char *recv_buf, unsigned &prev_packet_size,
+                         size_t received_bytes, F &&packet_handler) {
+        char *p = recv_buf;
+        auto remain = received_bytes;
+        unsigned packet_size;
+        if (0 == prev_packet_size)
+            packet_size = 0;
+        else
+            packet_size = p[0];
+
+        while (remain > 0) {
+            if (0 == packet_size)
+                packet_size = p[0];
+            unsigned required = packet_size - prev_packet_size;
+            if (required <= remain) {
+                packet_handler(p, packet_size);
+                remain -= required;
+                p += packet_size;
+                prev_packet_size = 0;
+                packet_size = 0;
+            } else {
+                memmove(recv_buf, p, remain);
+                prev_packet_size += remain;
+                break;
+            }
+        }
+    }
+};
+
+
 struct ServerData {
     tcp::socket socket{context};
     char recv_buf[MAX_BUFFER];
@@ -106,7 +140,8 @@ struct ServerData {
 
     void recv() {
         socket.async_read_some(
-            buffer(recv_buf, MAX_BUFFER), [this](auto error, auto len) {
+            buffer(recv_buf + prev_packet_size, MAX_BUFFER - prev_packet_size),
+            [this](auto error, auto len) {
                 handle_recv(error, len, recv_buf, prev_packet_size);
                 recv();
             });
@@ -127,22 +162,14 @@ struct ServerData {
             [this](char packet_size, char packet_type, unsigned id_num,
                    unsigned *ids, char *packet) {
                 switch (packet_type) {
-                case sf_packet_accept_login::type_num: {
-                    send_packet_to_client(
-                        ids[0],
-                        sizeof(packet_header) + sizeof(sc_packet_login_ok),
-                        sc_packet_login_ok::type_num, [packet](char *buf) {
-                            memcpy(buf, packet, sizeof(sc_packet_login_ok));
-                        });
-                } break;
                 case sf_packet_hand_over::type_num: {
                     auto &client = clients[ids[0]];
-                    client.server_socket = &other->socket;
+                    client->server_socket = &other->socket;
                     send_packet_to_server<fs_packet_hand_overed>(
-                        *client.server_socket, client.id,
+                        *client->server_socket, client->id, 0,
                         [](fs_packet_hand_overed &packet) {});
                     send_packet_to_server<fs_packet_hand_overed>(
-                        this->socket, client.id, [](auto &_) {});
+                        this->socket, client->id, 0, [](auto &_) {});
                 } break;
                 case sf_packet_reject_login::type_num: {
                 } break;
@@ -161,11 +188,56 @@ struct ServerData {
                 }
             });
     }
+
+    template <typename F>
+    void assemble_packet(char *recv_buf, unsigned &prev_packet_size,
+                         size_t received_bytes, F &&packet_handler) {
+        char *p = recv_buf;
+        auto remain = received_bytes;
+        unsigned packet_size;
+        if (0 == prev_packet_size)
+            packet_size = 0;
+        else
+            packet_size = p[0];
+
+        while (remain > 0) {
+            if (0 == packet_size)
+                packet_size = p[0];
+            unsigned required = packet_size - prev_packet_size;
+            if (required <= remain) {
+                unsigned *id_num = (unsigned *)(p + sizeof(packet_header));
+                packet_handler(p[0], p[1], *id_num, id_num + 1,
+                               (char *)(id_num + 1 + *id_num));
+                remain -= required;
+                p += packet_size;
+                prev_packet_size = 0;
+                packet_size = 0;
+            } else {
+                memmove(recv_buf, p, remain);
+                prev_packet_size += remain;
+                break;
+            }
+        }
+    }
 };
 
 ServerData server1, server2;
 
-void handle_accept(tcp::socket &&sock) {}
+atomic_uint next_user_id{0};
+
+void handle_accept(tcp::socket &&sock) {
+    auto new_user_id = next_user_id.fetch_add(1, memory_order_relaxed);
+
+    tcp::socket *server_sock;
+    if (new_user_id % 2 == 0) {
+        server_sock = &server1.socket;
+    } else {
+        server_sock = &server2.socket;
+    }
+    Client* new_client = new Client{move(sock), *server_sock, new_user_id};
+    clients[new_user_id] = new_client;
+    new_client->recv();
+}
 
 void connect_to_servers(address_v4 &ip1, address_v4 &ip2) {
     boost_error ec;
@@ -187,7 +259,7 @@ void connect_to_servers(address_v4 &ip1, address_v4 &ip2) {
     server2.recv();
 }
 
-void main() {
+int main() {
     auto addr = make_address_v4("127.0.0.1");
     connect_to_servers(addr, addr);
 

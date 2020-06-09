@@ -104,11 +104,6 @@ void send_packet(int id, F &&packet_maker_func) {
     send_packet<P>(*client_slot.ptr, move(packet_maker_func));
 }
 
-template <typename P, typename F>
-void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
-    send_packet_all<P>(&client, 1, move(packet_maker_func));
-}
-
 // user_num은 32bit unsigned int, user는 id => unsigned int
 template <typename P, typename F>
 void send_packet_all(SOCKETINFO **users, unsigned user_num,
@@ -138,34 +133,9 @@ void send_packet_all(SOCKETINFO **users, unsigned user_num,
 }
 
 template <typename P, typename F>
-void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
-    unsigned total_size = sizeof(packet_header) + sizeof(P);
-
-    send_packet_to_server(
-        sock, total_size,
-        [f{move(packet_maker_func)}, total_size](char *packet) {
-            packet_header *header = (packet_header *)packet;
-            header->size = total_size;
-            header->type = P::type_num;
-
-            f(*(P *)(packet + sizeof(packet_header)));
-        });
-}
-
-template <typename F>
-void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
-                           F &&packet_maker_func) {
-    char *packet = new char[packet_size];
-
-    packet_maker_func(packet);
-
-    sock.async_send(
-        buffer(packet, packet_size), [packet](auto error, auto length) {
-            delete[] packet;
-            if (error) {
-                cerr << "Error at send to server : " << error.message() << endl;
-            }
-        });
+void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
+    SOCKETINFO *c_ptr = &client;
+    send_packet_all<P>(&c_ptr, 1, move(packet_maker_func));
 }
 
 void send_login_ok_packet(SOCKETINFO &client, unsigned id) {
@@ -332,12 +302,14 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
         client.is_proxy = true;
         return true;
     }
+
+    return false;
 }
 
 bool Server::ProcessMove(int id, unsigned char dir, unsigned move_time) {
     auto &client_slot = clients[id];
     if (!client_slot)
-        return;
+        return false;
     auto &client = client_slot.ptr;
 
     if (move_time != 0)
@@ -457,21 +429,20 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
     } else {
         assemble_packet(this->recv_buf, this->prev_packet_len, length,
                         [this](unsigned id, char *packet, auto len) {
-                            char *buf = new char[len];
-                            memcpy(buf, packet, len);
-                            clients[id].then([buf](SOCKETINFO &cl) {
+                            unique_ptr<char[]> buf{new char[len]};
+                            memcpy(buf.get(), packet, len);
+                            clients[id].then([&buf](SOCKETINFO &cl) {
                                 switch (cl.status.load(memory_order_acquire)) {
                                 case Normal:
                                 case HandOvering:
-                                    cl.pending_packets.emplace(
-                                        make_unique(buf));
+                                    cl.pending_packets.emplace(move(buf));
                                     break;
                                 case HandOvered:
                                     cl.pending_while_hand_over_packets.emplace(
-                                        make_unique(buf));
+                                        move(buf));
                                     break;
                                 }
-                            })
+                            });
                         });
 
         front_end_sock.async_read_some(
@@ -668,22 +639,9 @@ void Server::handle_recv_from_server(const boost_error &error,
 
 bool Server::process_packet_from_front_end(unsigned id,
                                            unique_ptr<char[]> &&packet) {
-    unsigned id = *(unsigned *)(packet.get() + sizeof(packet_header));
     switch (packet[1]) {
-    case fs_packet_try_login::type_num: {
-        auto &new_player = handle_accept(id);
-        send_packet<sf_packet_accept_login>(
-            new_player, [&new_player](sf_packet_accept_login &packet) {
-                packet.id = new_player.id;
-                packet.x = new_player.x;
-                packet.y = new_player.y;
-                packet.hp = 100;
-                packet.level = 1;
-                packet.exp = 0;
-            });
-    } break;
     case fs_packet_logout::type_num: {
-        clients[id].then([this, packet{move(packet)}](SOCKETINFO &cl) {
+        clients[id].then([this, &packet](SOCKETINFO &cl) {
             if (cl.status.load(memory_order_acquire) == HandOvering) {
                 cl.pending_while_hand_over_packets.emplace(move(packet));
                 cl.end_hand_over(this->other_server_send);
@@ -705,8 +663,7 @@ bool Server::process_packet_from_front_end(unsigned id,
     } break;
     case fs_packet_forwarding::type_num: {
         bool result = false;
-        clients[id].then([&result, this, id,
-                          packet{move(packet)}](SOCKETINFO &cl) {
+        clients[id].then([&result, this, id, &packet](SOCKETINFO &cl) {
             if (cl.status.load(memory_order_acquire) != Normal) {
                 cl.pending_while_hand_over_packets.emplace(move(packet));
             } else
@@ -724,6 +681,7 @@ bool Server::process_packet(int id, void *buff) {
     char *packet = reinterpret_cast<char *>(buff);
     switch (packet[1]) {
     case cs_packet_login::type_num: {
+        auto &new_player = handle_accept(id);
         cs_packet_login *login_packet =
             reinterpret_cast<cs_packet_login *>(packet);
         ProcessLogin(id, login_packet->id);

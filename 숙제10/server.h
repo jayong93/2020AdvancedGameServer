@@ -5,6 +5,7 @@
 #include "protocol.h"
 #include "spsc_queue.h"
 #include <boost/asio.hpp>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -16,6 +17,37 @@ using namespace boost::asio::ip;
 using boost_error = boost::system::error_code;
 
 constexpr unsigned NUM_WORKER = 6;
+
+template <typename F>
+void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
+                           F &&packet_maker_func) {
+    char *packet = new char[packet_size];
+
+    packet_maker_func(packet);
+
+    sock.async_send(
+        buffer(packet, packet_size), [packet](auto error, auto length) {
+            delete[] packet;
+            if (error) {
+                std::cerr << "Error at send to server : " << error.message() << std::endl;
+            }
+        });
+}
+
+template <typename P, typename F>
+void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
+    unsigned total_size = sizeof(packet_header) + sizeof(P);
+
+    send_packet_to_server(
+        sock, total_size,
+        [f{move(packet_maker_func)}, total_size](char *packet) {
+            packet_header *header = (packet_header *)packet;
+            header->size = total_size;
+            header->type = P::type_num;
+
+            f(*(P *)(packet + sizeof(packet_header)));
+        });
+}
 
 struct ViewEvent {
     enum { VIEW_IN, VIEW_OUT } event;
@@ -70,18 +102,18 @@ struct SOCKETINFO {
                                   sizeof(packet_header) + packet[0];
             send_packet_to_server(
                 send_sock, total_size,
-                [this, total_size, &real_packet{packet}](char *packet) {
-                    packet_header *header = (packet_header *)packet;
+                [this, total_size, &packet](char *p) {
+                    packet_header *header = (packet_header *)p;
                     header->size = total_size;
                     header->type = ss_packet_forwarding::type_num;
 
-                    packet += sizeof(packet_header);
+                    p += sizeof(packet_header);
                     ss_packet_forwarding *outer_packet =
-                        (ss_packet_forwarding *)packet;
+                        (ss_packet_forwarding *)p;
                     outer_packet->id = id;
 
-                    packet += sizeof(ss_packet_forwarding);
-                    memcpy(packet, real_packet.get(), real_packet[0]);
+                    p += sizeof(ss_packet_forwarding);
+                    memcpy(p, packet.get(), packet[0]);
                 });
         };
         this->pending_while_hand_over_packets.for_each(maker);
