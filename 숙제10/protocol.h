@@ -146,6 +146,23 @@ struct message_hand_over_started {
     static constexpr type type_num = 18;
 };
 
+struct message_proxy_in {
+    using type = char;
+    static constexpr type type_num = 19;
+    short x, y;
+};
+
+struct message_proxy_move {
+    using type = char;
+    static constexpr type type_num = 20;
+    short x, y;
+};
+
+struct message_proxy_leave {
+    using type = char;
+    static constexpr type type_num = 21;
+};
+
 struct cs_packet_login {
     using type = char;
     static constexpr type type_num = 1;

@@ -96,6 +96,22 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
 }
 
 template <typename P, typename F>
+unique_ptr<char[]> make_message(unsigned id, F &&func) {
+    unsigned total_size = sizeof(packet_header) + sizeof(unsigned) + sizeof(P);
+    unique_ptr<char[]> packet{new char[total_size]};
+
+    packet_header *header = (packet_header *)packet.get();
+    header->size = total_size;
+    header->type = P::type_num;
+
+    unsigned *id_ptr = (unsigned *)(header + 1);
+    *id_ptr = id;
+
+    func(*(P *)(id_ptr + 1));
+    return packet;
+}
+
+template <typename P, typename F>
 pair<char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
                                  F &&func) {
 
@@ -225,6 +241,18 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
 
     send_pos_packet(client, client);
 
+    if (move_type == HandOver) {
+        send_packet_to_server<ss_packet_move>(other_server_send,
+                                              [&client](ss_packet_move &p) {
+                                                  p.id = client.id;
+                                                  p.x = client.x;
+                                                  p.y = client.y;
+                                              });
+        client.is_proxy = true;
+        client.is_in_edge = false;
+        return true;
+    }
+
     auto old_view_list = client.copy_view_list();
 
     set<unsigned> new_view_list;
@@ -313,12 +341,6 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                                                   p.x = client.x;
                                                   p.y = client.y;
                                               });
-    }
-
-    if (move_type == HandOver) {
-        client.is_proxy = true;
-        client.is_in_edge = false;
-        return true;
     }
 
     return false;
@@ -520,8 +542,10 @@ Server::Server(unsigned short port)
 void Server::do_worker(unsigned worker_id) {
     SPSCQueue<unsigned> &queue = this->worker_queue[worker_id];
     while (true) {
-        if (queue.is_empty())
+        if (queue.is_empty()) {
+            this_thread::yield();
             continue;
+        }
 
         auto user_id = *queue.deq();
 
@@ -698,16 +722,6 @@ bool Server::process_packet_from_front_end(unsigned id,
             }
         });
     } break;
-    case message_hand_over_started::type_num: {
-        clients[id].then([this, id](SOCKETINFO &cl) {
-            auto status = cl.status.load(memory_order_acquire);
-            if (status == HandOvering) {
-                cl.end_hand_over(this->other_server_send);
-            } else {
-                cerr << "Something goes wrong during handover" << endl;
-            }
-        });
-    } break;
     case fs_packet_forwarding::type_num: {
         bool result = false;
         clients[id].then([&result, this, id, &packet](SOCKETINFO &cl) {
@@ -720,6 +734,49 @@ bool Server::process_packet_from_front_end(unsigned id,
                                            sizeof(fs_packet_forwarding));
         });
         return result;
+    } break;
+    case message_hand_over_started::type_num: {
+        clients[id].then([this, id](SOCKETINFO &cl) {
+            auto status = cl.status.load(memory_order_acquire);
+            if (status == HandOvering) {
+                cl.end_hand_over(this->other_server_send);
+            } else {
+                cerr << "Something goes wrong during handover" << endl;
+            }
+        });
+    } break;
+    case message_proxy_in::type_num: {
+        clients[id].then([this, id](SOCKETINFO &new_client) {
+            for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+                auto &slot = clients[i];
+                slot.then([&new_client](auto &cl) {
+                    if (is_near(cl.x, cl.y, new_client.x, new_client.y)) {
+                        send_put_object_packet(cl, new_client);
+                    }
+                });
+            }
+        });
+    } break;
+    case message_proxy_move::type_num: {
+        message_proxy_move *move_packet =
+            (message_proxy_move *)(packet.get() + sizeof(packet_header) +
+                                   sizeof(unsigned));
+        clients[id].then([this, move_packet](SOCKETINFO &cl) {
+            ProcessMove(cl, move_packet->x, move_packet->y, 0);
+        });
+    } break;
+    case message_proxy_leave::type_num: {
+        auto &client_slot = clients[id];
+        client_slot.then([this, &client_slot](SOCKETINFO &old_client) {
+            client_slot.is_active.store(false);
+            for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
+                auto &slot = clients[i];
+                slot.then([&old_client](auto &cl) {
+                    if (is_near(cl.x, cl.y, old_client.x, old_client.y))
+                        send_remove_object_packet(cl, old_client);
+                });
+            }
+        });
     } break;
     }
     return false;
@@ -765,12 +822,10 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     switch (header->type) {
     case ss_packet_put::type_num: {
         ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(packet);
+
         auto &client_slot = clients[put_packet->id];
         client_slot.then_else(
-            [put_packet](auto &cl) {
-                cl.x = put_packet->x;
-                cl.y = put_packet->y;
-            },
+            [](auto &cl) {},
             [put_packet, &client_slot, this]() {
                 client_slot.ptr.reset(create_new_player(
                     this->front_end_sock, put_packet->id, put_packet->x,
@@ -782,50 +837,40 @@ void Server::process_packet_from_server(char *buff, size_t length) {
                                        memory_order_relaxed);
             });
 
-        auto &new_client = client_slot.ptr;
-
-        for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-            auto &slot = clients[i];
-            slot.then([put_packet, &new_client](auto &cl) {
-                if (is_near(cl.x, cl.y, new_client->x, new_client->y)) {
-                    send_put_object_packet(cl, *new_client);
-                }
+        auto msg = make_message<message_proxy_in>(
+            put_packet->id, [put_packet](message_proxy_in &msg) {
+                msg.x = put_packet->x;
+                msg.y = put_packet->y;
             });
-        }
+        client_slot.ptr->pending_packets.emplace(move(msg));
     } break;
     case ss_packet_leave::type_num: {
         ss_packet_leave *leave_packet = (ss_packet_leave *)packet;
         auto &client_slot = clients[leave_packet->id];
         client_slot.then([&client_slot](auto &old_client) {
-            client_slot.is_active.store(false);
-            for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-                auto &slot = clients[i];
-                slot.then([&old_client](auto &cl) {
-                    if (is_near(cl.x, cl.y, old_client.x, old_client.y))
-                        send_remove_object_packet(cl, old_client);
-                });
-            }
+            auto msg = make_message<message_proxy_leave>(old_client.id,
+                                                         [](auto &_) {});
+            old_client.pending_packets.emplace(move(msg));
         });
     } break;
     case ss_packet_move::type_num: {
         ss_packet_move *move_packet = (ss_packet_move *)packet;
         auto &client_slot = clients[move_packet->id];
         client_slot.then([move_packet, this](auto &cl) {
-            ProcessMove(cl, move_packet->x, move_packet->y, 0);
+            auto msg = make_message<message_proxy_move>(
+                move_packet->id, [move_packet](message_proxy_move &msg) {
+                    msg.x = move_packet->x;
+                    msg.y = move_packet->y;
+                });
+            cl.pending_packets.emplace(move(msg));
         });
     } break;
     case ss_packet_hand_over_started::type_num: {
         ss_packet_hand_over_started *h_packet =
             (ss_packet_hand_over_started *)packet;
         clients[h_packet->id].then([h_packet](SOCKETINFO &cl) {
-            unsigned size = sizeof(packet_header) + sizeof(unsigned) +
-                            sizeof(message_hand_over_started);
-            unique_ptr<char[]> packet{new char[size]};
-            packet_header *header = (packet_header *)packet.get();
-            header->size = size;
-            header->type = message_hand_over_started::type_num;
-            unsigned *id = (unsigned *)(header + 1);
-            *id = h_packet->id;
+            auto packet = make_message<message_hand_over_started>(
+                h_packet->id, [](auto &_) {});
 
             cl.pending_packets.emplace(move(packet));
         });
@@ -844,6 +889,9 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     } break;
     case ss_packet_hand_overed::type_num: {
         ss_packet_hand_overed *h_packet = (ss_packet_hand_overed *)packet;
+        send_packet_to_server<ss_packet_leave>(
+            this->other_server_send,
+            [h_packet](ss_packet_leave &packet) { packet.id = h_packet->id; });
         clients[h_packet->id].then(
             [](SOCKETINFO &cl) { cl.status.store(Normal); });
     } break;
