@@ -1,3 +1,4 @@
+#include "toml.hpp"
 #include "protocol.h"
 #include <atomic>
 #include <boost/asio.hpp>
@@ -246,14 +247,14 @@ void handle_accept(tcp::socket &&sock, tcp::acceptor &acceptor) {
         });
 }
 
-void connect_to_servers(address_v4 &ip1, address_v4 &ip2) {
+void connect_to_servers(const tcp::endpoint &end_point1, const tcp::endpoint &end_point2) {
     boost_error ec;
-    server1.socket.connect(tcp::endpoint(ip1, SERVER_PORT + 1), ec);
+    server1.socket.connect(end_point1, ec);
     if (ec) {
         cerr << "Can't connect to server 1" << endl;
         exit(-1);
     }
-    server2.socket.connect(tcp::endpoint(ip2, SERVER_PORT + 2), ec);
+    server2.socket.connect(end_point2, ec);
     if (ec) {
         cerr << "Can't connect to server 2" << endl;
         exit(-1);
@@ -267,10 +268,16 @@ void connect_to_servers(address_v4 &ip1, address_v4 &ip2) {
 }
 
 int main() {
-    auto addr = make_address_v4("127.0.0.1");
-    connect_to_servers(addr, addr);
+    auto config = toml::parse("config.toml");
+    const unsigned short port = toml::find<unsigned short>(config, "accept_port");
+    const string server1_ip = toml::find<string>(config, "server1_ip");
+    const string server2_ip = toml::find<string>(config, "server2_ip");
+    const unsigned short server1_port = toml::find<unsigned short>(config, "server1_port");
+    const unsigned short server2_port = toml::find<unsigned short>(config, "server2_port");
+    
+    connect_to_servers(tcp::endpoint{make_address_v4(server1_ip), server1_port}, tcp::endpoint{make_address_v4(server2_ip), server2_port});
 
-    tcp::acceptor acceptor{context, tcp::endpoint{tcp::v4(), SERVER_PORT}};
+    tcp::acceptor acceptor{context, tcp::endpoint{tcp::v4(), port}};
     acceptor.async_accept(
         [&acceptor](const boost_error &error, tcp::socket sock) {
             if (error) {

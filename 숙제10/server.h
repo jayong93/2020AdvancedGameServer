@@ -21,7 +21,8 @@ constexpr unsigned NUM_WORKER = 6;
 template <typename F>
 void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
                            F &&packet_maker_func) {
-    if (packet_size <= 0) return;
+    if (packet_size <= 0)
+        return;
 
     char *packet = new char[packet_size];
 
@@ -31,7 +32,8 @@ void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
         buffer(packet, packet_size), [packet](auto error, auto length) {
             delete[] packet;
             if (error) {
-                std::cerr << "Error at send to server : " << error.message() << std::endl;
+                std::cerr << "Error at send to server : " << error.message()
+                          << std::endl;
             }
         });
 }
@@ -103,8 +105,7 @@ struct SOCKETINFO {
             unsigned total_size = sizeof(ss_packet_forwarding) +
                                   sizeof(packet_header) + packet[0];
             send_packet_to_server(
-                send_sock, total_size,
-                [this, total_size, &packet](char *p) {
+                send_sock, total_size, [this, total_size, &packet](char *p) {
                     packet_header *header = (packet_header *)p;
                     header->size = total_size;
                     header->type = ss_packet_forwarding::type_num;
@@ -209,7 +210,8 @@ class Server {
     size_t other_prev_len{0};
 
   public:
-    Server(unsigned short port);
-    void run();
+    Server(unsigned id, unsigned short accept_port,
+           unsigned short other_server_accept_port);
+    void run(const string &other_server_ip, unsigned short other_server_port);
 };
 #endif /* A5F36F66_1CD6_49C1_9533_263A9B883FE0 */

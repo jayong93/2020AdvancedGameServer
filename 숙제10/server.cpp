@@ -494,39 +494,38 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
     }
 }
 
-void async_connect_to_other_server(tcp::socket &sock, unsigned short port) {
-    auto server_ip = ip::make_address_v4("127.0.0.1");
-    sock.async_connect(tcp::endpoint{server_ip, port}, [&sock,
-                                                        port](auto &error) {
+void async_connect_to_other_server(tcp::socket &sock, address_v4 ip,
+                                   unsigned short port) {
+    sock.async_connect(tcp::endpoint{ip, port}, [&sock, ip, port](auto &error) {
         if (error) {
             cerr << "Can't connect to other server(cause : " << error.message()
                  << ")" << endl;
             std::this_thread::sleep_for(1s);
             cerr << "Retry..." << endl;
             sock.close();
-            async_connect_to_other_server(sock, port);
+            async_connect_to_other_server(sock, ip, port);
         } else {
             cerr << "Connected to other server" << endl;
         }
     });
 }
 
-Server::Server(unsigned short port)
+Server::Server(unsigned id, unsigned short accept_port,
+               unsigned short other_server_accept_port)
     : context{}, acceptor{context}, server_acceptor{context},
       other_server_send{context}, other_server_recv{context}, front_end_sock{
                                                                   context} {
     tcp::acceptor::reuse_address option{true};
 
-    auto end_point = tcp::endpoint{tcp::v4(), port};
+    auto end_point = tcp::endpoint{tcp::v4(), accept_port};
     acceptor.open(end_point.protocol());
     acceptor.set_option(option);
     acceptor.bind(end_point);
     acceptor.listen();
 
-    server_id = port - SERVER_PORT - 1;
+    server_id = id;
 
-    auto other_end_point =
-        tcp::endpoint{tcp::v4(), (unsigned short)(port + 10)};
+    auto other_end_point = tcp::endpoint{tcp::v4(), other_server_accept_port};
     server_acceptor.open(other_end_point.protocol());
     server_acceptor.set_option(option);
     server_acceptor.bind(other_end_point);
@@ -570,7 +569,7 @@ void Server::do_worker(unsigned worker_id) {
     }
 }
 
-void Server::run() {
+void Server::run(const string &other_server_ip, unsigned short other_server_port) {
     vector<thread> worker_threads;
     acceptor.async_accept(front_end_sock, [this](boost_error error) {
         if (error) {
@@ -623,8 +622,8 @@ void Server::run() {
                                           });
     });
 
-    unsigned short port = SERVER_PORT + 10 + 1 + (1 - server_id);
-    async_connect_to_other_server(other_server_send, port);
+    auto ip = make_address_v4(other_server_ip);
+    async_connect_to_other_server(other_server_send, ip, other_server_port);
 
     io_thread.join();
     for (auto &th : worker_threads)
@@ -745,8 +744,9 @@ bool Server::process_packet_from_front_end(unsigned id,
             auto status = cl.status.load(memory_order_acquire);
             if (status == HandOvered) {
                 for (auto i = 0; i < user_num.load(memory_order_acquire); ++i) {
-                    if (i == id) continue;
-                    clients[i].then([&cl](SOCKETINFO &other){
+                    if (i == id)
+                        continue;
+                    clients[i].then([&cl](SOCKETINFO &other) {
                         send_put_object_packet(cl, other);
                     });
                 }
