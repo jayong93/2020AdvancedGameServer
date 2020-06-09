@@ -47,11 +47,12 @@ void send_packet_to_server(tcp::socket &sock, unsigned id,
 
     packet_header *header = (packet_header *)packet;
     header->size = packet_size;
+    header->type = P::type_num;
 
     unsigned *id_ptr = (unsigned *)(packet + sizeof(packet_header));
     *id_ptr = id;
-    packet_maker_func(
-        *(P *)(packet + sizeof(packet_header) + sizeof(unsigned)));
+    packet_maker_func(*(P *)(packet + sizeof(packet_header) + sizeof(unsigned)),
+                      packet + (packet_size - real_packet_size));
 
     sock.async_send(
         buffer(packet, packet_size), [packet](auto error, auto length) {
@@ -83,21 +84,21 @@ struct Client {
             cerr << "Error at handle_recv of a client(#" << id
                  << ") : " << error.message() << endl;
             send_packet_to_server<fs_packet_logout>(*server_socket, id, 0,
-                                                    [](auto &_) {});
+                                                    [](auto &_, char* extra) {});
         } else if (received_bytes == 0) {
             send_packet_to_server<fs_packet_logout>(*server_socket, id, 0,
-                                                    [](auto &_) {});
+                                                    [](auto &_, char* extra) {});
         }
 
-        assemble_packet(
-            recv_buf, prev_recv_len, received_bytes,
-            [this](char *packet, unsigned packet_size) {
-                send_packet_to_server<fs_packet_forwarding>(
-                    *server_socket, id, packet_size,
-                    [real_packet{packet}, packet_size](fs_packet_forwarding &packet) {
-                        memcpy(&packet, real_packet, packet_size);
-                    });
-            });
+        assemble_packet(recv_buf, prev_recv_len, received_bytes,
+                        [this](char *packet, unsigned packet_size) {
+                            send_packet_to_server<fs_packet_forwarding>(
+                                *server_socket, id, packet_size,
+                                [real_packet{packet},
+                                 packet_size](fs_packet_forwarding &packet, char* extra) {
+                                    memcpy(extra, real_packet, packet_size);
+                                });
+                        });
         recv();
     }
 
@@ -130,7 +131,6 @@ struct Client {
         }
     }
 };
-
 
 struct ServerData {
     tcp::socket socket{context};
@@ -167,9 +167,10 @@ struct ServerData {
                     client->server_socket = &other->socket;
                     send_packet_to_server<fs_packet_hand_overed>(
                         *client->server_socket, client->id, 0,
-                        [](fs_packet_hand_overed &packet) {});
+                        [](fs_packet_hand_overed &packet, char *extra) {});
                     send_packet_to_server<fs_packet_hand_overed>(
-                        this->socket, client->id, 0, [](auto &_) {});
+                        this->socket, client->id, 0,
+                        [](auto &_, char *extra) {});
                 } break;
                 case sf_packet_reject_login::type_num: {
                 } break;
@@ -234,7 +235,7 @@ void handle_accept(tcp::socket &&sock) {
     } else {
         server_sock = &server2.socket;
     }
-    Client* new_client = new Client{move(sock), *server_sock, new_user_id};
+    Client *new_client = new Client{move(sock), *server_sock, new_user_id};
     clients[new_user_id] = new_client;
     new_client->recv();
 }
@@ -275,5 +276,9 @@ int main() {
     vector<thread> workers;
     for (auto i = 0; i < 8; ++i) {
         workers.emplace_back([]() { context.run(); });
+    }
+
+    for (auto &t : workers) {
+        t.join();
     }
 }

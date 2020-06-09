@@ -21,6 +21,8 @@ constexpr unsigned NUM_WORKER = 6;
 template <typename F>
 void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
                            F &&packet_maker_func) {
+    if (packet_size <= 0) return;
+
     char *packet = new char[packet_size];
 
     packet_maker_func(packet);

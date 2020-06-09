@@ -108,6 +108,8 @@ void send_packet(int id, F &&packet_maker_func) {
 template <typename P, typename F>
 void send_packet_all(SOCKETINFO **users, unsigned user_num,
                      F &&packet_maker_func) {
+    if (user_num <= 0) return;
+    
     unsigned packet_offset =
         sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
     unsigned total_size = packet_offset + sizeof(P);
@@ -300,6 +302,7 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
 
     if (move_type == HandOver) {
         client.is_proxy = true;
+        client.is_in_edge = false;
         return true;
     }
 
@@ -427,23 +430,32 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
     } else if (length == 0) {
         exit(0);
     } else {
-        assemble_packet(this->recv_buf, this->prev_packet_len, length,
-                        [this](unsigned id, char *packet, auto len) {
-                            unique_ptr<char[]> buf{new char[len]};
-                            memcpy(buf.get(), packet, len);
-                            clients[id].then([&buf](SOCKETINFO &cl) {
-                                switch (cl.status.load(memory_order_acquire)) {
-                                case Normal:
-                                case HandOvering:
-                                    cl.pending_packets.emplace(move(buf));
-                                    break;
-                                case HandOvered:
-                                    cl.pending_while_hand_over_packets.emplace(
-                                        move(buf));
-                                    break;
-                                }
-                            });
-                        });
+        assemble_packet(
+            this->recv_buf, this->prev_packet_len, length,
+            [this](unsigned id, char *packet, auto len) {
+                if (packet[1] == fs_packet_forwarding::type_num) {
+                    char *real_packet = packet + sizeof(packet_header) +
+                                        sizeof(unsigned) +
+                                        sizeof(fs_packet_forwarding);
+                    if (real_packet[1] == cs_packet_login::type_num) {
+                        handle_accept(id);
+                    }
+                }
+
+                unique_ptr<char[]> buf{new char[len]};
+                memcpy(buf.get(), packet, len);
+                clients[id].then([&buf](SOCKETINFO &cl) {
+                    switch (cl.status.load(memory_order_acquire)) {
+                    case Normal:
+                    case HandOvering:
+                        cl.pending_packets.emplace(move(buf));
+                        break;
+                    case HandOvered:
+                        cl.pending_while_hand_over_packets.emplace(move(buf));
+                        break;
+                    }
+                });
+            });
 
         front_end_sock.async_read_some(
             buffer(this->recv_buf, MAX_BUFFER),
@@ -472,8 +484,11 @@ Server::Server(unsigned short port)
     : context{}, acceptor{context}, server_acceptor{context},
       other_server_send{context}, other_server_recv{context}, front_end_sock{
                                                                   context} {
+    tcp::acceptor::reuse_address option{true};
+
     auto end_point = tcp::endpoint{tcp::v4(), port};
     acceptor.open(end_point.protocol());
+    acceptor.set_option(option);
     acceptor.bind(end_point);
     acceptor.listen();
 
@@ -482,6 +497,7 @@ Server::Server(unsigned short port)
     auto other_end_point =
         tcp::endpoint{tcp::v4(), (unsigned short)(port + 10)};
     server_acceptor.open(other_end_point.protocol());
+    server_acceptor.set_option(option);
     server_acceptor.bind(other_end_point);
     server_acceptor.listen();
 }
@@ -540,16 +556,17 @@ void Server::run() {
         while (true) {
             for (unsigned i = 0; i < user_num.load(memory_order_acquire); ++i) {
                 clients[i].then([this, &next_worker_id, i](SOCKETINFO &cl) {
+                    if (cl.is_handling.load(memory_order_acquire) == true)
+                        return;
+
                     if (cl.pending_packets.is_empty() &&
                         cl.pending_while_hand_over_packets.is_empty())
                         return;
 
-                    if (cl.is_handling.load(memory_order_acquire) == false) {
-                        if (cl.is_handling.exchange(true) == true)
-                            return;
-                        this->worker_queue[next_worker_id].emplace(i);
-                        next_worker_id = (next_worker_id + 1) % NUM_WORKER;
-                    }
+                    if (cl.is_handling.exchange(true) == true)
+                        return;
+                    this->worker_queue[next_worker_id].emplace(i);
+                    next_worker_id = (next_worker_id + 1) % NUM_WORKER;
                 });
             }
         }
@@ -573,7 +590,7 @@ void Server::run() {
                                           });
     });
 
-    unsigned short port = SERVER_PORT + 10 + (1 - server_id);
+    unsigned short port = SERVER_PORT + 10 + 1 + (1 - server_id);
     async_connect_to_other_server(other_server_send, port);
 
     io_thread.join();
@@ -669,7 +686,8 @@ bool Server::process_packet_from_front_end(unsigned id,
             } else
                 result =
                     process_packet(id, (packet.get() + sizeof(packet_header) +
-                                        sizeof(unsigned)));
+                                        sizeof(unsigned)) +
+                                           sizeof(fs_packet_forwarding));
         });
         return result;
     } break;
@@ -678,10 +696,10 @@ bool Server::process_packet_from_front_end(unsigned id,
 }
 
 bool Server::process_packet(int id, void *buff) {
-    char *packet = reinterpret_cast<char *>(buff);
-    switch (packet[1]) {
+    packet_header *header = (packet_header *)buff;
+    char *packet = reinterpret_cast<char *>(buff) + sizeof(packet_header);
+    switch (header->type) {
     case cs_packet_login::type_num: {
-        auto &new_player = handle_accept(id);
         cs_packet_login *login_packet =
             reinterpret_cast<cs_packet_login *>(packet);
         ProcessLogin(id, login_packet->id);
@@ -712,9 +730,11 @@ bool Server::process_packet(int id, void *buff) {
 }
 
 void Server::process_packet_from_server(char *buff, size_t length) {
-    switch (buff[1]) {
+    packet_header *header = (packet_header *)buff;
+    char *packet = reinterpret_cast<char *>(buff + sizeof(packet_header));
+    switch (header->type) {
     case ss_packet_put::type_num: {
-        ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(buff);
+        ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(packet);
         auto &client_slot = clients[put_packet->id];
         client_slot.then_else(
             [put_packet](auto &cl) {
@@ -744,7 +764,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         }
     } break;
     case ss_packet_leave::type_num: {
-        ss_packet_leave *leave_packet = (ss_packet_leave *)buff;
+        ss_packet_leave *leave_packet = (ss_packet_leave *)packet;
         auto &client_slot = clients[leave_packet->id];
         client_slot.then([&client_slot](auto &old_client) {
             client_slot.is_active.store(false);
@@ -758,14 +778,14 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         });
     } break;
     case ss_packet_move::type_num: {
-        ss_packet_move *move_packet = (ss_packet_move *)buff;
+        ss_packet_move *move_packet = (ss_packet_move *)packet;
         auto &client_slot = clients[move_packet->id];
         client_slot.then([move_packet, this](auto &cl) {
             ProcessMove(cl, move_packet->x, move_packet->y, 0);
         });
     } break;
     case ss_packet_forwarding::type_num: {
-        ss_packet_forwarding *f_packet = (ss_packet_forwarding *)buff;
+        ss_packet_forwarding *f_packet = (ss_packet_forwarding *)packet;
         clients[f_packet->id].then([buff](SOCKETINFO &cl) {
             if (cl.is_proxy == true)
                 cl.is_proxy = false;
@@ -777,8 +797,8 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         });
     } break;
     case ss_packet_hand_overed::type_num: {
-        ss_packet_hand_overed *packet = (ss_packet_hand_overed *)buff;
-        clients[packet->id].then(
+        ss_packet_hand_overed *h_packet = (ss_packet_hand_overed *)packet;
+        clients[h_packet->id].then(
             [](SOCKETINFO &cl) { cl.status.store(Normal); });
     } break;
     }
