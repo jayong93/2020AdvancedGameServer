@@ -33,7 +33,7 @@ void send_packet_to_client(unsigned id, char packet_size, char packet_type,
         buffer(packet, packet_size), [packet](auto error, auto length) {
             delete[] packet;
             if (error) {
-                cerr << "Error at send to server : " << error.message() << endl;
+                cerr << "Error at send to client : " << error.message() << endl;
             }
         });
 }
@@ -83,19 +83,19 @@ struct Client {
         if (error) {
             cerr << "Error at handle_recv of a client(#" << id
                  << ") : " << error.message() << endl;
-            send_packet_to_server<fs_packet_logout>(*server_socket, id, 0,
-                                                    [](auto &_, char* extra) {});
+            send_packet_to_server<fs_packet_logout>(
+                *server_socket, id, 0, [](auto &_, char *extra) {});
         } else if (received_bytes == 0) {
-            send_packet_to_server<fs_packet_logout>(*server_socket, id, 0,
-                                                    [](auto &_, char* extra) {});
+            send_packet_to_server<fs_packet_logout>(
+                *server_socket, id, 0, [](auto &_, char *extra) {});
         }
 
         assemble_packet(recv_buf, prev_recv_len, received_bytes,
                         [this](char *packet, unsigned packet_size) {
                             send_packet_to_server<fs_packet_forwarding>(
                                 *server_socket, id, packet_size,
-                                [real_packet{packet},
-                                 packet_size](fs_packet_forwarding &packet, char* extra) {
+                                [real_packet{packet}, packet_size](
+                                    fs_packet_forwarding &packet, char *extra) {
                                     memcpy(extra, real_packet, packet_size);
                                 });
                         });
@@ -168,9 +168,6 @@ struct ServerData {
                     send_packet_to_server<fs_packet_hand_overed>(
                         *client->server_socket, client->id, 0,
                         [](fs_packet_hand_overed &packet, char *extra) {});
-                    send_packet_to_server<fs_packet_hand_overed>(
-                        this->socket, client->id, 0,
-                        [](auto &_, char *extra) {});
                 } break;
                 case sf_packet_reject_login::type_num: {
                 } break;
@@ -226,7 +223,7 @@ ServerData server1, server2;
 
 atomic_uint next_user_id{0};
 
-void handle_accept(tcp::socket &&sock) {
+void handle_accept(tcp::socket &&sock, tcp::acceptor &acceptor) {
     auto new_user_id = next_user_id.fetch_add(1, memory_order_relaxed);
 
     tcp::socket *server_sock;
@@ -238,6 +235,15 @@ void handle_accept(tcp::socket &&sock) {
     Client *new_client = new Client{move(sock), *server_sock, new_user_id};
     clients[new_user_id] = new_client;
     new_client->recv();
+
+    acceptor.async_accept(
+        [&acceptor](const boost_error &error, tcp::socket sock) {
+            if (error) {
+                cerr << "Error in accept : " << error.message() << endl;
+            } else {
+                handle_accept(move(sock), acceptor);
+            }
+        });
 }
 
 void connect_to_servers(address_v4 &ip1, address_v4 &ip2) {
@@ -265,13 +271,14 @@ int main() {
     connect_to_servers(addr, addr);
 
     tcp::acceptor acceptor{context, tcp::endpoint{tcp::v4(), SERVER_PORT}};
-    acceptor.async_accept([](const boost_error &error, tcp::socket sock) {
-        if (error) {
-            cerr << "Error in accept : " << error.message() << endl;
-        } else {
-            handle_accept(move(sock));
-        }
-    });
+    acceptor.async_accept(
+        [&acceptor](const boost_error &error, tcp::socket sock) {
+            if (error) {
+                cerr << "Error in accept : " << error.message() << endl;
+            } else {
+                handle_accept(move(sock), acceptor);
+            }
+        });
 
     vector<thread> workers;
     for (auto i = 0; i < 8; ++i) {

@@ -96,25 +96,17 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
 }
 
 template <typename P, typename F>
-void send_packet(int id, F &&packet_maker_func) {
-    auto &client_slot = clients[id];
-    if (!client_slot)
-        return;
+pair<char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
+                                 F &&func) {
 
-    send_packet<P>(*client_slot.ptr, move(packet_maker_func));
-}
+    if (user_num <= 0)
+        return make_pair(nullptr, 0);
 
-// user_num은 32bit unsigned int, user는 id => unsigned int
-template <typename P, typename F>
-void send_packet_all(SOCKETINFO **users, unsigned user_num,
-                     F &&packet_maker_func) {
-    if (user_num <= 0) return;
-    
     unsigned packet_offset =
         sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
     unsigned total_size = packet_offset + sizeof(P);
-    char *packet = new char[total_size];
 
+    char *packet = new char[total_size];
     packet_header *header = (packet_header *)packet;
     header->size = total_size;
     header->type = P::type_num;
@@ -125,7 +117,18 @@ void send_packet_all(SOCKETINFO **users, unsigned user_num,
         *(user_data + i + 1) = users[i]->id;
     }
 
-    packet_maker_func(*(P *)(packet + packet_offset));
+    func(*(P *)(packet + packet_offset));
+    return make_pair(packet, total_size);
+}
+
+// user_num은 32bit unsigned int, user는 id => unsigned int
+template <typename P, typename F>
+void send_packet_all(SOCKETINFO **users, unsigned user_num,
+                     F &&packet_maker_func) {
+    auto [packet, total_size] =
+        make_packet<P>(users, user_num, move(packet_maker_func));
+    if (packet == nullptr)
+        return;
 
     (*users)->sock.async_send(buffer(packet, total_size),
                               [packet](auto error, auto length) {
@@ -138,6 +141,15 @@ template <typename P, typename F>
 void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
     SOCKETINFO *c_ptr = &client;
     send_packet_all<P>(&c_ptr, 1, move(packet_maker_func));
+}
+
+template <typename P, typename F>
+void send_packet(int id, F &&packet_maker_func) {
+    auto &client_slot = clients[id];
+    if (!client_slot)
+        return;
+
+    send_packet<P>(*client_slot.ptr, move(packet_maker_func));
 }
 
 void send_login_ok_packet(SOCKETINFO &client, unsigned id) {
@@ -234,7 +246,8 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                 other.insert_to_view(client.id);
                 client.insert_to_view(other.id);
                 send_put_object_packet(client, other);
-                to_put.emplace_back(&other);
+                if (other.is_proxy == false)
+                    to_put.emplace_back(&other);
             }
         });
     }
@@ -258,9 +271,11 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                     other.erase_from_view(client.id);
                     client.erase_from_view(other.id);
                     send_remove_object_packet(client, other);
-                    to_remove.emplace_back(&other);
+                    if (other.is_proxy == false)
+                        to_remove.emplace_back(&other);
                 } else {
-                    to_pos.emplace_back(&other);
+                    if (other.is_proxy == false)
+                        to_pos.emplace_back(&other);
                 }
             });
     }
@@ -668,13 +683,28 @@ bool Server::process_packet_from_front_end(unsigned id,
         });
     } break;
     case fs_packet_hand_overed::type_num: {
-        clients[id].then([this](SOCKETINFO &cl) {
+        clients[id].then([this, id](SOCKETINFO &cl) {
             auto status = cl.status.load(memory_order_acquire);
             if (status == Normal) {
                 cl.is_proxy = false;
                 cl.status.store(HandOvered);
-            } else if (status == HandOvering) {
+                send_packet_to_server<ss_packet_hand_over_started>(
+                    this->other_server_send,
+                    [id](ss_packet_hand_over_started &packet) {
+                        packet.id = id;
+                    });
+            } else {
+                cerr << "Something goes wrong during handover" << endl;
+            }
+        });
+    } break;
+    case message_hand_over_started::type_num: {
+        clients[id].then([this, id](SOCKETINFO &cl) {
+            auto status = cl.status.load(memory_order_acquire);
+            if (status == HandOvering) {
                 cl.end_hand_over(this->other_server_send);
+            } else {
+                cerr << "Something goes wrong during handover" << endl;
             }
         });
     } break;
@@ -782,6 +812,22 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         auto &client_slot = clients[move_packet->id];
         client_slot.then([move_packet, this](auto &cl) {
             ProcessMove(cl, move_packet->x, move_packet->y, 0);
+        });
+    } break;
+    case ss_packet_hand_over_started::type_num: {
+        ss_packet_hand_over_started *h_packet =
+            (ss_packet_hand_over_started *)packet;
+        clients[h_packet->id].then([h_packet](SOCKETINFO &cl) {
+            unsigned size = sizeof(packet_header) + sizeof(unsigned) +
+                            sizeof(message_hand_over_started);
+            unique_ptr<char[]> packet{new char[size]};
+            packet_header *header = (packet_header *)packet.get();
+            header->size = size;
+            header->type = message_hand_over_started::type_num;
+            unsigned *id = (unsigned *)(header + 1);
+            *id = h_packet->id;
+
+            cl.pending_packets.emplace(move(packet));
         });
     } break;
     case ss_packet_forwarding::type_num: {

@@ -104,6 +104,12 @@ struct ss_packet_hand_overed {
     unsigned id;
 };
 
+struct ss_packet_hand_over_started {
+    using type = char;
+    static constexpr type type_num = 6;
+    unsigned id;
+};
+
 // - try_login: front-end가 server에게. 로그인 시도하는 id가 담겨있음
 // - accept_login: server가 front-end에게. 시도한 id 그대로 돌려줌
 // - logout: front-end가 server에게. 접속이 끊어진 client id를 전송
@@ -133,6 +139,11 @@ struct fs_packet_hand_overed {
 struct fs_packet_forwarding {
     using type = char;
     static constexpr type type_num = 17;
+};
+
+struct message_hand_over_started {
+    using type = char;
+    static constexpr type type_num = 18;
 };
 
 struct cs_packet_login {
