@@ -163,6 +163,11 @@ struct message_proxy_leave {
     static constexpr type type_num = 21;
 };
 
+struct message_hand_over_ended {
+    using type = char;
+    static constexpr type type_num = 22;
+};
+
 struct cs_packet_login {
     using type = char;
     static constexpr type type_num = 1;

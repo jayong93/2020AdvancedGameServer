@@ -740,6 +740,22 @@ bool Server::process_packet_from_front_end(unsigned id,
             }
         });
     } break;
+    case message_hand_over_ended::type_num: {
+        clients[id].then([this, id](SOCKETINFO &cl) {
+            auto status = cl.status.load(memory_order_acquire);
+            if (status == HandOvered) {
+                for (auto i = 0; i < user_num.load(memory_order_acquire); ++i) {
+                    if (i == id) continue;
+                    clients[i].then([&cl](SOCKETINFO &other){
+                        send_put_object_packet(cl, other);
+                    });
+                }
+                cl.status.store(Normal);
+            } else {
+                cerr << "Something goes wrong during handover" << endl;
+            }
+        });
+    } break;
     case message_proxy_in::type_num: {
         clients[id].then([this, id](SOCKETINFO &new_client) {
             new_client.is_in_edge = true;
@@ -875,8 +891,6 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     case ss_packet_forwarding::type_num: {
         ss_packet_forwarding *f_packet = (ss_packet_forwarding *)packet;
         clients[f_packet->id].then([buff](SOCKETINFO &cl) {
-            if (cl.is_proxy == true)
-                cl.is_proxy = false;
             char *real_packet =
                 (buff + sizeof(packet_header) + sizeof(ss_packet_forwarding));
             unique_ptr<char[]> new_packet(new char[real_packet[0]]);
@@ -889,8 +903,10 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         send_packet_to_server<ss_packet_leave>(
             this->other_server_send,
             [h_packet](ss_packet_leave &packet) { packet.id = h_packet->id; });
-        clients[h_packet->id].then([](SOCKETINFO &cl) {
-            cl.status.store(Normal);
+        clients[h_packet->id].then([h_packet](SOCKETINFO &cl) {
+            auto msg = make_message<message_hand_over_ended>(h_packet->id,
+                                                             [](auto &_) {});
+            cl.pending_packets.emplace(move(msg));
         });
     } break;
     }
