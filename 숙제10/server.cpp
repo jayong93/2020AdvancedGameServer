@@ -310,7 +310,6 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
         return false;
 
     if (client.is_in_edge == false && move_type == EnterToEdge) {
-        cerr << "client enter to edge" << endl;
         client.is_in_edge = true;
         send_packet_to_server<ss_packet_put>(this->other_server_send,
                                              [&client](ss_packet_put &p) {
@@ -702,7 +701,6 @@ bool Server::process_packet_from_front_end(unsigned id,
         });
     } break;
     case fs_packet_hand_overed::type_num: {
-        cerr << "ready for hand over" << endl;
         clients[id].then([this, id](SOCKETINFO &cl) {
             auto status = cl.status.load(memory_order_acquire);
             if (status == Normal) {
@@ -768,7 +766,6 @@ bool Server::process_packet_from_front_end(unsigned id,
         client_slot.then([this, &client_slot](SOCKETINFO &old_client) {
             client_slot.is_active.store(false);
             old_client.is_in_edge = false;
-            cerr << "client leaves from other server" << endl;
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
@@ -831,7 +828,6 @@ void Server::process_packet_from_server(char *buff, size_t length) {
                     this->front_end_sock, put_packet->id, put_packet->x,
                     put_packet->y, true, 1 - server_id));
                 client_slot.is_active.store(true, memory_order_release);
-                cerr << "client enter from other server" << endl;
                 auto old_user_num = user_num.load(memory_order_relaxed);
                 if (old_user_num <= put_packet->id)
                     user_num.fetch_add(put_packet->id - old_user_num + 1,
