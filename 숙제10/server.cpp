@@ -241,18 +241,6 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
 
     send_pos_packet(client, client);
 
-    if (move_type == HandOver) {
-        send_packet_to_server<ss_packet_move>(other_server_send,
-                                              [&client](ss_packet_move &p) {
-                                                  p.id = client.id;
-                                                  p.x = client.x;
-                                                  p.y = client.y;
-                                              });
-        client.is_proxy = true;
-        client.is_in_edge = false;
-        return true;
-    }
-
     auto old_view_list = client.copy_view_list();
 
     set<unsigned> new_view_list;
@@ -322,6 +310,7 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
         return false;
 
     if (client.is_in_edge == false && move_type == EnterToEdge) {
+        cerr << "client enter to edge" << endl;
         client.is_in_edge = true;
         send_packet_to_server<ss_packet_put>(this->other_server_send,
                                              [&client](ss_packet_put &p) {
@@ -341,6 +330,12 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
                                                   p.x = client.x;
                                                   p.y = client.y;
                                               });
+    }
+
+    if (move_type == HandOver) {
+        client.is_proxy = true;
+        client.is_in_edge = false;
+        return true;
     }
 
     return false;
@@ -707,10 +702,12 @@ bool Server::process_packet_from_front_end(unsigned id,
         });
     } break;
     case fs_packet_hand_overed::type_num: {
+        cerr << "ready for hand over" << endl;
         clients[id].then([this, id](SOCKETINFO &cl) {
             auto status = cl.status.load(memory_order_acquire);
             if (status == Normal) {
                 cl.is_proxy = false;
+                cl.is_in_edge = false;
                 cl.status.store(HandOvered);
                 send_packet_to_server<ss_packet_hand_over_started>(
                     this->other_server_send,
@@ -747,6 +744,7 @@ bool Server::process_packet_from_front_end(unsigned id,
     } break;
     case message_proxy_in::type_num: {
         clients[id].then([this, id](SOCKETINFO &new_client) {
+            new_client.is_in_edge = true;
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&new_client](auto &cl) {
@@ -769,6 +767,8 @@ bool Server::process_packet_from_front_end(unsigned id,
         auto &client_slot = clients[id];
         client_slot.then([this, &client_slot](SOCKETINFO &old_client) {
             client_slot.is_active.store(false);
+            old_client.is_in_edge = false;
+            cerr << "client leaves from other server" << endl;
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
@@ -831,6 +831,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
                     this->front_end_sock, put_packet->id, put_packet->x,
                     put_packet->y, true, 1 - server_id));
                 client_slot.is_active.store(true, memory_order_release);
+                cerr << "client enter from other server" << endl;
                 auto old_user_num = user_num.load(memory_order_relaxed);
                 if (old_user_num <= put_packet->id)
                     user_num.fetch_add(put_packet->id - old_user_num + 1,
@@ -892,8 +893,9 @@ void Server::process_packet_from_server(char *buff, size_t length) {
         send_packet_to_server<ss_packet_leave>(
             this->other_server_send,
             [h_packet](ss_packet_leave &packet) { packet.id = h_packet->id; });
-        clients[h_packet->id].then(
-            [](SOCKETINFO &cl) { cl.status.store(Normal); });
+        clients[h_packet->id].then([](SOCKETINFO &cl) {
+            cl.status.store(Normal);
+        });
     } break;
     }
 }
