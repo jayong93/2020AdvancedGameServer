@@ -247,64 +247,38 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
 
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client, &new_view_list](auto &cl) {
-            if (client.id != cl.id && is_near(cl.x, cl.y, client.x, client.y)) {
+            if (client.id != cl.id && is_near(cl.x, cl.y, client.x, client.y) &&
+                cl.is_logged_in) {
                 new_view_list.emplace(cl.id);
             }
         });
     }
 
-    vector<SOCKETINFO *> to_put, to_remove, to_pos;
-
     for (auto new_id : new_view_list) {
-        clients[new_id].then([&client, &old_view_list, &to_put](auto &other) {
+        clients[new_id].then([&client, &old_view_list](auto &other) {
             auto it = old_view_list.find(other.id);
             if (it == old_view_list.end()) {
                 other.insert_to_view(client.id);
                 client.insert_to_view(other.id);
                 send_put_object_packet(client, other);
-                if (other.is_proxy == false)
-                    to_put.emplace_back(&other);
+                send_put_object_packet(other, client);
             }
         });
     }
-    send_packet_all<sc_packet_put_object>(
-        to_put.data(), to_put.size(), [&client](sc_packet_put_object &packet) {
-            packet.id = client.id;
-            packet.x = client.x;
-            packet.y = client.y;
-            if (client.is_proxy) {
-                packet.o_type = 2;
-            } else {
-                packet.o_type = 1;
-            }
-        });
 
     for (auto old_id : old_view_list) {
-        clients[old_id].then(
-            [&client, &new_view_list, &to_remove, &to_pos](auto &other) {
-                auto it = new_view_list.find(other.id);
-                if (it == new_view_list.end()) {
-                    other.erase_from_view(client.id);
-                    client.erase_from_view(other.id);
-                    send_remove_object_packet(client, other);
-                    if (other.is_proxy == false)
-                        to_remove.emplace_back(&other);
-                } else {
-                    if (other.is_proxy == false)
-                        to_pos.emplace_back(&other);
-                }
-            });
+        clients[old_id].then([&client, &new_view_list](auto &other) {
+            auto it = new_view_list.find(other.id);
+            if (it == new_view_list.end()) {
+                other.erase_from_view(client.id);
+                client.erase_from_view(other.id);
+                send_remove_object_packet(client, other);
+                send_remove_object_packet(other, client);
+            } else {
+                send_pos_packet(other, client);
+            }
+        });
     }
-    send_packet_all<sc_packet_remove_object>(
-        to_remove.data(), to_remove.size(),
-        [&client](sc_packet_remove_object &packet) { packet.id = client.id; });
-    send_packet_all<sc_packet_pos>(to_pos.data(), to_pos.size(),
-                                   [&client](sc_packet_pos &packet) {
-                                       packet.id = client.id;
-                                       packet.move_time = client.move_time;
-                                       packet.x = client.x;
-                                       packet.y = client.y;
-                                   });
 
     if (client.is_proxy)
         return false;
@@ -400,12 +374,13 @@ void Server::ProcessLogin(int user_id, char *id_str) {
     auto &client = client_slot.ptr;
 
     client->name = id_str;
-    client_slot.is_active.store(true, memory_order_release);
     send_login_ok_packet(*client, user_id);
 
+    client_slot.ptr->is_logged_in = true;
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
-            if (is_near(other.x, other.y, client->x, client->y) == false) {
+            if (is_near(other.x, other.y, client->x, client->y) == false ||
+                other.is_logged_in != true) {
                 return;
             }
             if (other.is_proxy == false) {
@@ -428,22 +403,19 @@ void Server::ProcessLogin(int user_id, char *id_str) {
 
 SOCKETINFO *create_new_player(tcp::socket &sock, unsigned id, short x, short y,
                               bool is_proxy, unsigned server_id) {
-    SOCKETINFO *new_player = new SOCKETINFO{id, sock};
-    new_player->x = x;
-    new_player->y = y;
-    new_player->is_proxy = is_proxy;
-
     bool is_in_edge = false;
     if (server_id == 0) {
-        if (y > WORLD_HEIGHT / 2 - (VIEW_RANGE + 1)) {
+        if (y >= WORLD_HEIGHT / 2 - EDGE_RANGE) {
             is_in_edge = true;
         }
     } else {
-        if (y < WORLD_HEIGHT / 2 - VIEW_RANGE) {
+        if (y < WORLD_HEIGHT / 2 + EDGE_RANGE) {
             is_in_edge = true;
         }
     }
-    new_player->is_in_edge = is_in_edge;
+
+    SOCKETINFO *new_player =
+        new SOCKETINFO{id, sock, is_proxy, x, y, is_in_edge};
 
     return new_player;
 }
@@ -569,7 +541,8 @@ void Server::do_worker(unsigned worker_id) {
     }
 }
 
-void Server::run(const string &other_server_ip, unsigned short other_server_port) {
+void Server::run(const string &other_server_ip,
+                 unsigned short other_server_port) {
     vector<thread> worker_threads;
     acceptor.async_accept(front_end_sock, [this](boost_error error) {
         if (error) {
@@ -647,6 +620,7 @@ void Server::disconnect(unsigned id) {
     auto &client_slot = clients[id];
     if (!client_slot)
         return;
+    client_slot.ptr->is_logged_in = false;
     client_slot.is_active.store(false);
     auto &client = client_slot.ptr;
 
@@ -747,7 +721,9 @@ bool Server::process_packet_from_front_end(unsigned id,
                     if (i == id)
                         continue;
                     clients[i].then([&cl](SOCKETINFO &other) {
-                        send_put_object_packet(cl, other);
+                        if (is_near(cl.x, cl.y, other.x, other.y)) {
+                            send_put_object_packet(cl, other);
+                        }
                     });
                 }
                 cl.status.store(Normal);
@@ -758,11 +734,13 @@ bool Server::process_packet_from_front_end(unsigned id,
     } break;
     case message_proxy_in::type_num: {
         clients[id].then([this, id](SOCKETINFO &new_client) {
+            new_client.is_logged_in = true;
             new_client.is_in_edge = true;
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&new_client](auto &cl) {
-                    if (is_near(cl.x, cl.y, new_client.x, new_client.y)) {
+                    if (is_near(cl.x, cl.y, new_client.x, new_client.y) &&
+                        cl.is_logged_in) {
                         send_put_object_packet(cl, new_client);
                     }
                 });
@@ -780,12 +758,14 @@ bool Server::process_packet_from_front_end(unsigned id,
     case message_proxy_leave::type_num: {
         auto &client_slot = clients[id];
         client_slot.then([this, &client_slot](SOCKETINFO &old_client) {
-            client_slot.is_active.store(false);
+            old_client.is_logged_in = false;
             old_client.is_in_edge = false;
+            client_slot.is_active.store(false);
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
-                    if (is_near(cl.x, cl.y, old_client.x, old_client.y))
+                    if (is_near(cl.x, cl.y, old_client.x, old_client.y) &&
+                        cl.is_logged_in)
                         send_remove_object_packet(cl, old_client);
                 });
             }

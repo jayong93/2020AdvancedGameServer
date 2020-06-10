@@ -66,16 +66,20 @@ struct SOCKETINFO {
     string name;
 
     bool is_proxy;
+    bool is_logged_in{false};
     short x, y;
-    int move_time;
-    bool is_in_edge{false};
+    int move_time{0};
+    bool is_in_edge;
     atomic<ClientStatus> status{Normal};
 
     MPSCQueue<unique_ptr<char[]>> pending_packets;
     MPSCQueue<unique_ptr<char[]>> pending_while_hand_over_packets;
     atomic_bool is_handling{false};
 
-    SOCKETINFO(unsigned id, tcp::socket &sock) : id{id}, sock{sock} {}
+    SOCKETINFO(unsigned id, tcp::socket &sock, bool is_proxy, short x, short y,
+               bool is_in_edge)
+        : id{id}, sock{sock}, is_proxy{is_proxy}, x{x}, y{y}, is_in_edge{
+                                                                  is_in_edge} {}
     void insert_to_view(unsigned id) {
         unique_lock<mutex> lg{view_list_lock, try_to_lock};
         if (lg) {
