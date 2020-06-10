@@ -78,7 +78,7 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
 
     while (remain > 0) {
         if (0 == packet_size)
-            packet_size = p[0];
+            packet_size = (unsigned char)(p[0]);
         unsigned required = packet_size - prev_packet_size;
         if (required <= remain) {
             unsigned *id = (unsigned *)(p + sizeof(packet_header));
