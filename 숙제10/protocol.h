@@ -5,7 +5,7 @@ constexpr unsigned MAX_ID_LEN = 50;
 constexpr unsigned MAX_STR_LEN = 50;
 
 #define WORLD_WIDTH 400
-#define WORLD_HEIGHT 400
+#define WORLD_HEIGHT 800
 
 #define NPC_ID_START 20000
 
