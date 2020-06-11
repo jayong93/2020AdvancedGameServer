@@ -112,14 +112,13 @@ unique_ptr<unsigned char[]> make_message(unsigned id, F &&func) {
 }
 
 template <typename P, typename F>
-pair<unsigned char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
-                                          F &&func) {
+pair<unsigned char *, size_t> make_packet(SOCKETINFO &user, F &&func) {
 
     if (user_num <= 0)
         return make_pair(nullptr, 0);
 
     unsigned packet_offset =
-        sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
+        sizeof(packet_header) + sizeof(unsigned);
     unsigned total_size = packet_offset + sizeof(P);
 
     unsigned char *packet = new unsigned char[total_size];
@@ -127,36 +126,26 @@ pair<unsigned char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
     header->size = total_size;
     header->type = P::type_num;
 
-    unsigned *user_data = (unsigned *)(packet + sizeof(packet_header));
-    *user_data = user_num;
-    for (auto i = 0; i < user_num; ++i) {
-        *(user_data + i + 1) = users[i]->id;
-    }
+    unsigned *user_id = (unsigned *)(packet + sizeof(packet_header));
+    *user_id = user.id;
 
     func(*(P *)(packet + packet_offset));
     return make_pair(packet, total_size);
 }
 
-// user_num은 32bit unsigned int, user는 id => unsigned int
 template <typename P, typename F>
-void send_packet_all(SOCKETINFO **users, unsigned user_num,
-                     F &&packet_maker_func) {
+void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
     auto [packet, total_size] =
-        make_packet<P>(users, user_num, move(packet_maker_func));
+        make_packet<P>(client, move(packet_maker_func));
+
     if (packet == nullptr)
         return;
 
-    (*users)->sock.async_send(buffer(packet, total_size),
+    client.sock.async_send(buffer(packet, total_size),
                               [packet](auto error, auto length) {
                                   delete[] packet;
                                   handle_send(error, length);
                               });
-}
-
-template <typename P, typename F>
-void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
-    SOCKETINFO *c_ptr = &client;
-    send_packet_all<P>(&c_ptr, 1, move(packet_maker_func));
 }
 
 template <typename P, typename F>
@@ -769,6 +758,8 @@ bool Server::process_packet_from_front_end(
             }
         });
     } break;
+    default:
+        cerr << "Unknown type has been received" << endl;
     }
     return false;
 }
@@ -801,9 +792,7 @@ bool Server::process_packet(int id, void *buff) {
         ProcessMove(id, 99, 0);
         break;
     default:
-        cout << "Invalid Packet Type Error\n";
-        while (true)
-            ;
+        cerr << "Unknown type has been received" << endl;
     }
     return false;
 }
@@ -890,5 +879,7 @@ void Server::process_packet_from_server(unsigned char *buff, size_t length) {
             cl.pending_packets.emplace(move(msg));
         });
     } break;
+    default:
+        cerr << "Unknown type has been received" << endl;
     }
 }

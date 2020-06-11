@@ -162,14 +162,14 @@ struct ServerData {
         assemble_packet(
             buf, prev_packet_size, len,
             [this](unsigned char packet_size, unsigned char packet_type,
-                   unsigned id_num, unsigned *ids, unsigned char *packet) {
+                   unsigned id, unsigned char *packet) {
                 switch (packet_type) {
                 case sf_packet_hand_over::type_num: {
-                    if (ids[0] >= 20000) {
-                        cerr << "Wrong ID #" << ids[0] << endl;
+                    if (id >= 20000) {
+                        cerr << "Wrong ID #" << id << endl;
                         return;
                     }
-                    auto &client = clients[ids[0]];
+                    auto &client = clients[id];
                     client->server_socket = &other->socket;
                     send_packet_to_server<fs_packet_hand_overed>(
                         *client->server_socket, client->id, 0,
@@ -180,19 +180,17 @@ struct ServerData {
                 } break;
                 default: {
                     unsigned char new_packet_size =
-                        packet_size - sizeof(unsigned) * (id_num + 1);
-                    for (auto i = 0; i < id_num; ++i) {
-                        if (ids[0] >= 20000) {
-                            cerr << "Wrong ID #" << ids[0] << endl;
-                            return;
-                        }
-                        send_packet_to_client(
-                            ids[i], new_packet_size, packet_type,
-                            [packet, new_packet_size](unsigned char *buf) {
-                                memcpy(buf, packet,
-                                       new_packet_size - sizeof(packet_header));
-                            });
+                        packet_size - sizeof(unsigned);
+                    if (id >= 20000) {
+                        cerr << "Wrong ID #" << id << endl;
+                        return;
                     }
+                    send_packet_to_client(
+                        id, new_packet_size, packet_type,
+                        [packet, new_packet_size](unsigned char *buf) {
+                            memcpy(buf, packet,
+                                   new_packet_size - sizeof(packet_header));
+                        });
                 } break;
                 }
             });
@@ -201,22 +199,23 @@ struct ServerData {
     template <typename F>
     void assemble_packet(unsigned char *recv_buf, unsigned &prev_packet_size,
                          size_t received_bytes, F &&packet_handler) {
-        unsigned char *p = (unsigned char *)recv_buf;
+        unsigned char *p = recv_buf;
         auto remain = received_bytes;
         unsigned packet_size;
         if (0 == prev_packet_size)
             packet_size = 0;
         else
-            packet_size = (unsigned char)p[0];
+            packet_size = p[0];
 
         while (remain > 0) {
             if (0 == packet_size)
-                packet_size = (unsigned char)p[0];
+                packet_size = p[0];
             unsigned required = packet_size - prev_packet_size;
             if (required <= remain) {
-                unsigned *id_num = (unsigned *)(p + sizeof(packet_header));
-                packet_handler((unsigned char)p[0], p[1], *id_num, id_num + 1,
-                               (unsigned char *)(id_num + 1 + *id_num));
+                unsigned *id = (unsigned *)(p + sizeof(packet_header));
+                packet_handler(p[0], p[1], *id,
+                               (unsigned char *)(p + sizeof(packet_header) +
+                                                 sizeof(unsigned)));
                 remain -= required;
                 p += packet_size;
                 prev_packet_size = 0;
