@@ -20,7 +20,7 @@ struct Client;
 Client *clients[20000];
 
 template <typename F>
-void send_packet_to_client(unsigned id, char packet_size, char packet_type,
+void send_packet_to_client(unsigned id, unsigned char packet_size, char packet_type,
                            F &&packet_maker_func) {
     char *packet = new char[packet_size];
 
@@ -160,7 +160,7 @@ struct ServerData {
 
         assemble_packet(
             buf, prev_packet_size, len,
-            [this](char packet_size, char packet_type, unsigned id_num,
+            [this](unsigned char packet_size, char packet_type, unsigned id_num,
                    unsigned *ids, char *packet) {
                 switch (packet_type) {
                 case sf_packet_hand_over::type_num: {
@@ -173,7 +173,7 @@ struct ServerData {
                 case sf_packet_reject_login::type_num: {
                 } break;
                 default: {
-                    char new_packet_size =
+                    unsigned char new_packet_size =
                         packet_size - sizeof(unsigned) * (id_num + 1);
                     for (auto i = 0; i < id_num; ++i) {
                         send_packet_to_client(
@@ -201,11 +201,11 @@ struct ServerData {
 
         while (remain > 0) {
             if (0 == packet_size)
-                packet_size = p[0];
+                packet_size = (unsigned char)p[0];
             unsigned required = packet_size - prev_packet_size;
             if (required <= remain) {
                 unsigned *id_num = (unsigned *)(p + sizeof(packet_header));
-                packet_handler(p[0], p[1], *id_num, id_num + 1,
+                packet_handler((unsigned char)p[0], p[1], *id_num, id_num + 1,
                                (char *)(id_num + 1 + *id_num));
                 remain -= required;
                 p += packet_size;
