@@ -461,7 +461,7 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
             });
 
         front_end_sock.async_read_some(
-            buffer(this->recv_buf, MAX_BUFFER),
+            buffer(this->recv_buf + prev_packet_len, MAX_BUFFER - prev_packet_len),
             [this](auto error, auto length) { handle_recv(error, length); });
     }
 }
@@ -652,7 +652,7 @@ void Server::handle_recv_from_server(const boost_error &error,
                             process_packet_from_server(packet, len);
                         });
 
-        other_server_recv.async_read_some(buffer(other_recv_buf, MAX_BUFFER),
+        other_server_recv.async_read_some(buffer(other_recv_buf + other_prev_len, MAX_BUFFER - other_prev_len),
                                           [this](auto error, auto length) {
                                               handle_recv_from_server(error,
                                                                       length);
