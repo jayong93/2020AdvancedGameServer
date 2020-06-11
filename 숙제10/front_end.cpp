@@ -95,8 +95,9 @@ struct Client {
                         [this](unsigned char *packet, unsigned packet_size) {
                             send_packet_to_server<fs_packet_forwarding>(
                                 *server_socket, id, packet_size,
-                                [real_packet{packet}, packet_size](
-                                    fs_packet_forwarding &packet, unsigned char *extra) {
+                                [real_packet{packet},
+                                 packet_size](fs_packet_forwarding &packet,
+                                              unsigned char *extra) {
                                     memcpy(extra, real_packet, packet_size);
                                 });
                         });
@@ -160,15 +161,20 @@ struct ServerData {
 
         assemble_packet(
             buf, prev_packet_size, len,
-            [this](unsigned char packet_size, unsigned char packet_type, unsigned id_num,
-                   unsigned *ids, unsigned char *packet) {
+            [this](unsigned char packet_size, unsigned char packet_type,
+                   unsigned id_num, unsigned *ids, unsigned char *packet) {
                 switch (packet_type) {
                 case sf_packet_hand_over::type_num: {
+                    if (ids[0] >= 20000) {
+                        cerr << "Wrong ID #" << ids[0] << endl;
+                        return;
+                    }
                     auto &client = clients[ids[0]];
                     client->server_socket = &other->socket;
                     send_packet_to_server<fs_packet_hand_overed>(
                         *client->server_socket, client->id, 0,
-                        [](fs_packet_hand_overed &packet, unsigned char *extra) {});
+                        [](fs_packet_hand_overed &packet,
+                           unsigned char *extra) {});
                 } break;
                 case sf_packet_reject_login::type_num: {
                 } break;
@@ -176,6 +182,10 @@ struct ServerData {
                     unsigned char new_packet_size =
                         packet_size - sizeof(unsigned) * (id_num + 1);
                     for (auto i = 0; i < id_num; ++i) {
+                        if (ids[0] >= 20000) {
+                            cerr << "Wrong ID #" << ids[0] << endl;
+                            return;
+                        }
                         send_packet_to_client(
                             ids[i], new_packet_size, packet_type,
                             [packet, new_packet_size](unsigned char *buf) {
