@@ -1,5 +1,5 @@
-#include "toml.hpp"
 #include "protocol.h"
+#include "toml.hpp"
 #include <atomic>
 #include <boost/asio.hpp>
 #include <iostream>
@@ -20,9 +20,9 @@ struct Client;
 Client *clients[20000];
 
 template <typename F>
-void send_packet_to_client(unsigned id, unsigned char packet_size, char packet_type,
-                           F &&packet_maker_func) {
-    char *packet = new char[packet_size];
+void send_packet_to_client(unsigned id, unsigned char packet_size,
+                           char packet_type, F &&packet_maker_func) {
+    unsigned char *packet = new unsigned char[packet_size];
 
     packet_header *header = (packet_header *)packet;
     header->size = packet_size;
@@ -44,7 +44,7 @@ void send_packet_to_server(tcp::socket &sock, unsigned id,
                            unsigned real_packet_size, F &&packet_maker_func) {
     unsigned packet_size =
         sizeof(packet_header) + sizeof(unsigned) + sizeof(P) + real_packet_size;
-    char *packet = new char[packet_size];
+    unsigned char *packet = new unsigned char[packet_size];
 
     packet_header *header = (packet_header *)packet;
     header->size = packet_size;
@@ -68,7 +68,7 @@ struct Client {
     tcp::socket socket;
     tcp::socket *server_socket;
     unsigned id;
-    char recv_buf[MAX_CLIENT_BUF];
+    unsigned char recv_buf[MAX_CLIENT_BUF];
     unsigned prev_recv_len{0};
 
     Client(tcp::socket &&sock, tcp::socket &server_sock, unsigned id)
@@ -85,18 +85,18 @@ struct Client {
             cerr << "Error at handle_recv of a client(#" << id
                  << ") : " << error.message() << endl;
             send_packet_to_server<fs_packet_logout>(
-                *server_socket, id, 0, [](auto &_, char *extra) {});
+                *server_socket, id, 0, [](auto &_, unsigned char *extra) {});
         } else if (received_bytes == 0) {
             send_packet_to_server<fs_packet_logout>(
-                *server_socket, id, 0, [](auto &_, char *extra) {});
+                *server_socket, id, 0, [](auto &_, unsigned char *extra) {});
         }
 
         assemble_packet(recv_buf, prev_recv_len, received_bytes,
-                        [this](char *packet, unsigned packet_size) {
+                        [this](unsigned char *packet, unsigned packet_size) {
                             send_packet_to_server<fs_packet_forwarding>(
                                 *server_socket, id, packet_size,
                                 [real_packet{packet}, packet_size](
-                                    fs_packet_forwarding &packet, char *extra) {
+                                    fs_packet_forwarding &packet, unsigned char *extra) {
                                     memcpy(extra, real_packet, packet_size);
                                 });
                         });
@@ -104,9 +104,9 @@ struct Client {
     }
 
     template <typename F>
-    void assemble_packet(char *recv_buf, unsigned &prev_packet_size,
+    void assemble_packet(unsigned char *recv_buf, unsigned &prev_packet_size,
                          size_t received_bytes, F &&packet_handler) {
-        char *p = recv_buf;
+        unsigned char *p = recv_buf;
         auto remain = received_bytes;
         unsigned packet_size;
         if (0 == prev_packet_size)
@@ -135,7 +135,7 @@ struct Client {
 
 struct ServerData {
     tcp::socket socket{context};
-    char recv_buf[MAX_BUFFER];
+    unsigned char recv_buf[MAX_BUFFER];
     unsigned prev_packet_size{0};
     ServerData *other;
 
@@ -148,7 +148,7 @@ struct ServerData {
             });
     }
 
-    void handle_recv(boost_error error, size_t len, char buf[],
+    void handle_recv(boost_error error, size_t len, unsigned char buf[],
                      unsigned &prev_packet_size) {
         if (error) {
             cerr << "Error on recv : " << error.message() << endl;
@@ -160,15 +160,15 @@ struct ServerData {
 
         assemble_packet(
             buf, prev_packet_size, len,
-            [this](unsigned char packet_size, char packet_type, unsigned id_num,
-                   unsigned *ids, char *packet) {
+            [this](unsigned char packet_size, unsigned char packet_type, unsigned id_num,
+                   unsigned *ids, unsigned char *packet) {
                 switch (packet_type) {
                 case sf_packet_hand_over::type_num: {
                     auto &client = clients[ids[0]];
                     client->server_socket = &other->socket;
                     send_packet_to_server<fs_packet_hand_overed>(
                         *client->server_socket, client->id, 0,
-                        [](fs_packet_hand_overed &packet, char *extra) {});
+                        [](fs_packet_hand_overed &packet, unsigned char *extra) {});
                 } break;
                 case sf_packet_reject_login::type_num: {
                 } break;
@@ -178,7 +178,7 @@ struct ServerData {
                     for (auto i = 0; i < id_num; ++i) {
                         send_packet_to_client(
                             ids[i], new_packet_size, packet_type,
-                            [packet, new_packet_size](char *buf) {
+                            [packet, new_packet_size](unsigned char *buf) {
                                 memcpy(buf, packet,
                                        new_packet_size - sizeof(packet_header));
                             });
@@ -189,15 +189,15 @@ struct ServerData {
     }
 
     template <typename F>
-    void assemble_packet(char *recv_buf, unsigned &prev_packet_size,
+    void assemble_packet(unsigned char *recv_buf, unsigned &prev_packet_size,
                          size_t received_bytes, F &&packet_handler) {
-        char *p = recv_buf;
+        unsigned char *p = (unsigned char *)recv_buf;
         auto remain = received_bytes;
         unsigned packet_size;
         if (0 == prev_packet_size)
             packet_size = 0;
         else
-            packet_size = p[0];
+            packet_size = (unsigned char)p[0];
 
         while (remain > 0) {
             if (0 == packet_size)
@@ -206,7 +206,7 @@ struct ServerData {
             if (required <= remain) {
                 unsigned *id_num = (unsigned *)(p + sizeof(packet_header));
                 packet_handler((unsigned char)p[0], p[1], *id_num, id_num + 1,
-                               (char *)(id_num + 1 + *id_num));
+                               (unsigned char *)(id_num + 1 + *id_num));
                 remain -= required;
                 p += packet_size;
                 prev_packet_size = 0;
@@ -247,7 +247,8 @@ void handle_accept(tcp::socket &&sock, tcp::acceptor &acceptor) {
         });
 }
 
-void connect_to_servers(const tcp::endpoint &end_point1, const tcp::endpoint &end_point2) {
+void connect_to_servers(const tcp::endpoint &end_point1,
+                        const tcp::endpoint &end_point2) {
     boost_error ec;
     server1.socket.connect(end_point1, ec);
     if (ec) {
@@ -269,13 +270,18 @@ void connect_to_servers(const tcp::endpoint &end_point1, const tcp::endpoint &en
 
 int main() {
     auto config = toml::parse("config.toml");
-    const unsigned short port = toml::find<unsigned short>(config, "accept_port");
+    const unsigned short port =
+        toml::find<unsigned short>(config, "accept_port");
     const string server1_ip = toml::find<string>(config, "server1_ip");
     const string server2_ip = toml::find<string>(config, "server2_ip");
-    const unsigned short server1_port = toml::find<unsigned short>(config, "server1_port");
-    const unsigned short server2_port = toml::find<unsigned short>(config, "server2_port");
-    
-    connect_to_servers(tcp::endpoint{make_address_v4(server1_ip), server1_port}, tcp::endpoint{make_address_v4(server2_ip), server2_port});
+    const unsigned short server1_port =
+        toml::find<unsigned short>(config, "server1_port");
+    const unsigned short server2_port =
+        toml::find<unsigned short>(config, "server2_port");
+
+    connect_to_servers(
+        tcp::endpoint{make_address_v4(server1_ip), server1_port},
+        tcp::endpoint{make_address_v4(server2_ip), server2_port});
 
     tcp::acceptor acceptor{context, tcp::endpoint{tcp::v4(), port}};
     acceptor.async_accept(

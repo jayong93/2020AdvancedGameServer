@@ -66,9 +66,9 @@ void handle_send(const boost_error &error, const size_t length) {
 }
 
 template <typename F>
-void assemble_packet(char *recv_buf, size_t &prev_packet_size,
+void assemble_packet(unsigned char *recv_buf, size_t &prev_packet_size,
                      size_t received_bytes, F &&packet_handler) {
-    char *p = recv_buf;
+    unsigned char *p = (unsigned char *)recv_buf;
     auto remain = received_bytes;
     unsigned packet_size;
     if (0 == prev_packet_size)
@@ -96,9 +96,9 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
 }
 
 template <typename P, typename F>
-unique_ptr<char[]> make_message(unsigned id, F &&func) {
+unique_ptr<unsigned char[]> make_message(unsigned id, F &&func) {
     unsigned total_size = sizeof(packet_header) + sizeof(unsigned) + sizeof(P);
-    unique_ptr<char[]> packet{new char[total_size]};
+    unique_ptr<unsigned char[]> packet{new unsigned char[total_size]};
 
     packet_header *header = (packet_header *)packet.get();
     header->size = total_size;
@@ -112,8 +112,8 @@ unique_ptr<char[]> make_message(unsigned id, F &&func) {
 }
 
 template <typename P, typename F>
-pair<char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
-                                 F &&func) {
+pair<unsigned char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
+                                          F &&func) {
 
     if (user_num <= 0)
         return make_pair(nullptr, 0);
@@ -122,7 +122,7 @@ pair<char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
         sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
     unsigned total_size = packet_offset + sizeof(P);
 
-    char *packet = new char[total_size];
+    unsigned char *packet = new unsigned char[total_size];
     packet_header *header = (packet_header *)packet;
     header->size = total_size;
     header->type = P::type_num;
@@ -435,17 +435,17 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
     } else {
         assemble_packet(
             this->recv_buf, this->prev_packet_len, length,
-            [this](unsigned id, char *packet, auto len) {
+            [this](unsigned id, unsigned char *packet, auto len) {
                 if (packet[1] == fs_packet_forwarding::type_num) {
-                    char *real_packet = packet + sizeof(packet_header) +
-                                        sizeof(unsigned) +
-                                        sizeof(fs_packet_forwarding);
+                    unsigned char *real_packet =
+                        packet + sizeof(packet_header) + sizeof(unsigned) +
+                        sizeof(fs_packet_forwarding);
                     if (real_packet[1] == cs_packet_login::type_num) {
                         handle_accept(id);
                     }
                 }
 
-                unique_ptr<char[]> buf{new char[len]};
+                unique_ptr<unsigned char[]> buf{new unsigned char[len]};
                 memcpy(buf.get(), packet, len);
                 clients[id].then([&buf](SOCKETINFO &cl) {
                     switch (cl.status.load(memory_order_acquire)) {
@@ -461,7 +461,8 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
             });
 
         front_end_sock.async_read_some(
-            buffer(this->recv_buf + prev_packet_len, MAX_BUFFER - prev_packet_len),
+            buffer(this->recv_buf + prev_packet_len,
+                   MAX_BUFFER - prev_packet_len),
             [this](auto error, auto length) { handle_recv(error, length); });
     }
 }
@@ -517,7 +518,7 @@ void Server::do_worker(unsigned worker_id) {
         clients[user_id].then([this, user_id](SOCKETINFO &cl) {
             if (cl.status.load(memory_order_acquire) == Normal) {
                 cl.pending_while_hand_over_packets.for_each(
-                    [this, user_id](unique_ptr<char[]> packet) {
+                    [this, user_id](unique_ptr<unsigned char[]> packet) {
                         this->process_packet_from_front_end(user_id,
                                                             move(packet));
                     });
@@ -624,17 +625,13 @@ void Server::disconnect(unsigned id) {
     client_slot.is_active.store(false);
     auto &client = client_slot.ptr;
 
-    vector<SOCKETINFO *> near_clients;
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        clients[i].then([&client, &near_clients](auto &other) {
-            if (is_near(other.x, other.y, client->x, client->y))
-                near_clients.emplace_back(&other);
+        clients[i].then([&client](auto &other) {
+            if (is_near(other.x, other.y, client->x, client->y) &&
+                other.is_logged_in)
+                send_remove_object_packet(other, *client);
         });
     }
-
-    send_packet_all<sc_packet_remove_object>(
-        near_clients.data(), near_clients.size(),
-        [&client](sc_packet_remove_object &packet) { packet.id = client->id; });
 
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_leave>(
@@ -648,20 +645,21 @@ void Server::handle_recv_from_server(const boost_error &error,
         cerr << "Error at recv from other server: " << error.message() << endl;
     } else if (length > 0) {
         assemble_packet(other_recv_buf, other_prev_len, length,
-                        [this](auto _, char *packet, unsigned len) {
+                        [this](auto _, unsigned char *packet, unsigned len) {
                             process_packet_from_server(packet, len);
                         });
 
-        other_server_recv.async_read_some(buffer(other_recv_buf + other_prev_len, MAX_BUFFER - other_prev_len),
-                                          [this](auto error, auto length) {
-                                              handle_recv_from_server(error,
-                                                                      length);
-                                          });
+        other_server_recv.async_read_some(
+            buffer(other_recv_buf + other_prev_len,
+                   MAX_BUFFER - other_prev_len),
+            [this](auto error, auto length) {
+                handle_recv_from_server(error, length);
+            });
     }
 }
 
-bool Server::process_packet_from_front_end(unsigned id,
-                                           unique_ptr<char[]> &&packet) {
+bool Server::process_packet_from_front_end(
+    unsigned id, unique_ptr<unsigned char[]> &&packet) {
     switch (packet[1]) {
     case fs_packet_logout::type_num: {
         clients[id].then([this, &packet](SOCKETINFO &cl) {
@@ -777,7 +775,8 @@ bool Server::process_packet_from_front_end(unsigned id,
 
 bool Server::process_packet(int id, void *buff) {
     packet_header *header = (packet_header *)buff;
-    char *packet = reinterpret_cast<char *>(buff) + sizeof(packet_header);
+    unsigned char *packet =
+        reinterpret_cast<unsigned char *>(buff) + sizeof(packet_header);
     switch (header->type) {
     case cs_packet_login::type_num: {
         cs_packet_login *login_packet =
@@ -809,9 +808,10 @@ bool Server::process_packet(int id, void *buff) {
     return false;
 }
 
-void Server::process_packet_from_server(char *buff, size_t length) {
+void Server::process_packet_from_server(unsigned char *buff, size_t length) {
     packet_header *header = (packet_header *)buff;
-    char *packet = reinterpret_cast<char *>(buff + sizeof(packet_header));
+    unsigned char *packet =
+        reinterpret_cast<unsigned char *>(buff + sizeof(packet_header));
     switch (header->type) {
     case ss_packet_put::type_num: {
         ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(packet);
@@ -871,9 +871,10 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     case ss_packet_forwarding::type_num: {
         ss_packet_forwarding *f_packet = (ss_packet_forwarding *)packet;
         clients[f_packet->id].then([buff](SOCKETINFO &cl) {
-            char *real_packet =
+            unsigned char *real_packet =
                 (buff + sizeof(packet_header) + sizeof(ss_packet_forwarding));
-            unique_ptr<char[]> new_packet(new char[real_packet[0]]);
+            unique_ptr<unsigned char[]> new_packet(
+                new unsigned char[real_packet[0]]);
             memcpy(new_packet.get(), real_packet, real_packet[0]);
             cl.pending_packets.emplace(move(new_packet));
         });
