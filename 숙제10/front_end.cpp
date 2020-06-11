@@ -16,11 +16,8 @@ constexpr unsigned MAX_CLIENT_BUF = 1024;
 
 io_context context;
 
-struct Client;
-Client *clients[20000];
-
 template <typename F>
-void send_packet_to_client(unsigned id, unsigned char packet_size,
+void send_packet_to_client(tcp::socket &sock, unsigned char packet_size,
                            char packet_type, F &&packet_maker_func) {
     unsigned char *packet = new unsigned char[packet_size];
 
@@ -30,7 +27,7 @@ void send_packet_to_client(unsigned id, unsigned char packet_size,
 
     packet_maker_func(packet + sizeof(packet_header));
 
-    clients[id]->socket.async_send(
+    sock.async_send(
         buffer(packet, packet_size), [packet](auto error, auto length) {
             delete[] packet;
             if (error) {
@@ -134,6 +131,8 @@ struct Client {
     }
 };
 
+Client *clients[20000];
+
 struct ServerData {
     tcp::socket socket{context};
     unsigned char recv_buf[MAX_BUFFER];
@@ -186,7 +185,7 @@ struct ServerData {
                         return;
                     }
                     send_packet_to_client(
-                        id, new_packet_size, packet_type,
+                        clients[id]->socket, new_packet_size, packet_type,
                         [packet, new_packet_size](unsigned char *buf) {
                             memcpy(buf, packet,
                                    new_packet_size - sizeof(packet_header));
