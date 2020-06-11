@@ -652,9 +652,8 @@ bool Server::process_packet_from_front_end(
     switch (packet[1]) {
     case fs_packet_logout::type_num: {
         clients[id].then([this, &packet](SOCKETINFO &cl) {
-            if (cl.status.load(memory_order_acquire) == HandOvering) {
+            if (cl.status.load(memory_order_acquire) != Normal) {
                 cl.pending_while_hand_over_packets.emplace(move(packet));
-                cl.end_hand_over(this->other_server_send);
             } else {
                 disconnect(cl.id);
             }
