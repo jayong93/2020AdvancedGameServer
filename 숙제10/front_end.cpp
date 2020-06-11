@@ -123,7 +123,7 @@ struct Client {
                 prev_packet_size = 0;
                 packet_size = 0;
             } else {
-                memmove(recv_buf, p, remain);
+                memmove(recv_buf + prev_packet_size, p + prev_packet_size, remain);
                 prev_packet_size += remain;
                 break;
             }
@@ -220,7 +220,7 @@ struct ServerData {
                 prev_packet_size = 0;
                 packet_size = 0;
             } else {
-                memmove(recv_buf, p, remain);
+                memmove(recv_buf + prev_packet_size, p + prev_packet_size, remain);
                 prev_packet_size += remain;
                 break;
             }
