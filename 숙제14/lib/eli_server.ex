@@ -39,34 +39,34 @@ defmodule EliServer do
     end
   end
 
-  def send_loginOK_packet(sock, id) do
+  def send_loginOK_packet(pid, id) do
     pk_size = 6
     pk_type = 1
-    :gen_tcp.send(sock, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
-    id::little-integer-size(32)>>)
+    send(pid, {:send, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
+    id::little-integer-size(32)>>})
   end
 
-  def send_put_player_packet(sock, id, x, y) do
+  def send_put_player_packet(pid, id, x, y) do
     pk_size = 10
     pk_type = 2
-    :gen_tcp.send(sock, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
+    send(pid, {:send, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
                           id::little-integer-size(32),
-                          x::little-integer-signed-size(16), y::little-integer-signed-size(16)>>)
+                          x::little-integer-signed-size(16), y::little-integer-signed-size(16)>>})
   end
 
-  def send_remove_player_packet(sock, id) do
+  def send_remove_player_packet(pid, id) do
     pk_size = 6
     pk_type = 3
-    :gen_tcp.send(sock, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
-                          id::little-integer-size(32)>>)
+    send(pid, {:send, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
+                          id::little-integer-size(32)>>})
   end
 
-  def send_pos_packet(sock, id, x, y) do
+  def send_pos_packet(pid, id, x, y) do
     pk_size = 10
     pk_type = 4
-    :gen_tcp.send(sock, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
+    send(pid, {:send, <<pk_size::little-integer-size(8), pk_type::little-integer-size(8),
                           id::little-integer-size(32),
-                          x::little-integer-signed-size(16), y::little-integer-signed-size(16)>>)
+                          x::little-integer-signed-size(16), y::little-integer-signed-size(16)>>})
   end
 
 
@@ -76,19 +76,20 @@ defmodule EliServer do
         <<pk_type::little-integer-size(8)>> = b
         send pid, {:packet, pk_type}
         recv_packet(sock, pid)
-      {:error, _} ->
+      {:error, reason} ->
+        IO.inspect(reason, label: "error at recv, with pk_size(#{pk_size})")
         send pid, {:packet, -1}
         :gen_tcp.close(sock)
     end
   end
 
-  @spec recv_packet(port, any) :: :ok
   def recv_packet(sock, pid) do
     case :gen_tcp.recv(sock, 1) do
       {:ok, b} ->
         <<pk_size::little-integer-size(8)>> = b
         recv_packet(sock, pid, pk_size - 1)
-      {:error, _} ->
+      {:error, reason} ->
+        IO.inspect(reason, label: "error at recv")
         send pid, {:packet, -1}
         :gen_tcp.close(sock)
     end
@@ -101,12 +102,12 @@ defmodule EliServer do
     x1 = div((x - 4) + abs(x - 4), 2)
     x2 = (1 - div(x + 4, 300))*(x + 4) + (div(x + 4, 300))*(300 - 1)
     y1 = div((y - 4) + abs(y - 4), 2)
-    y2 =  (1 - div(y + 4, 600))*(y + 4) + (div(y + 4, 600))*(600 - 1)
+    y2 =  (1 - div(y + 4, 300))*(y + 4) + (div(y + 4, 300))*(300 - 1)
 
-    map_set = MapSet.put(map_set, div(y1,40)*15 + div(x1,20))
-    map_set = MapSet.put(map_set, div(y1,40)*15 + div(x2,20))
-    map_set = MapSet.put(map_set, div(y2,40)*15 + div(x1,20))
-    map_set = MapSet.put(map_set, div(y2,40)*15 + div(x2,20))
+    map_set = MapSet.put(map_set, div(y1,20)*15 + div(x1,20))
+    map_set = MapSet.put(map_set, div(y1,20)*15 + div(x2,20))
+    map_set = MapSet.put(map_set, div(y2,20)*15 + div(x1,20))
+    map_set = MapSet.put(map_set, div(y2,20)*15 + div(x2,20))
 
     map_set
   end
@@ -230,14 +231,11 @@ defmodule EliServer do
     end
   end
 
-  @spec handle_client(port, integer, integer, integer, tuple) :: no_return
-  def handle_client(client, sx, sy, id, sectors) do
+  def handle_client(sender, sx, sy, id, sectors) do
     x = sx
     y = sy
 
-    mypid = self()
-    spawn fn -> EliServer.recv_packet(client, mypid) end
-    EliServer.send_loginOK_packet(client, id)
+    EliServer.send_loginOK_packet(sender, id)
 
     col = div(sx, 20)
     row = div(sy, 20)
@@ -246,26 +244,38 @@ defmodule EliServer do
     viewSectors = EliServer.get_view_sectors(x, y)
     send_sbroadMsg(MapSet.to_list(viewSectors), id, x, y, self(), sectors)
 
-    EliServer.send_pos_packet(client, id, x, y)
+    EliServer.send_pos_packet(sender, id, x, y)
 
     viewList = MapSet.new()
-    EliServer.loop_client(client, x, y, id, sectors, viewList, viewSectors)
+    EliServer.loop_client(sender, x, y, id, sectors, viewList, viewSectors)
   end
 
-  def run_sectors(n, sectors, _) when n == 15*30 do
+  def run_sectors_slave(n, sectors, _) when n == 15*15 do
     sectors
   end
 
-  def run_sectors(n, sectors, slave_node) when n >= 15*15 do
+  def run_sectors_slave(n, sectors, slave_node) do
     # spawn_link node
-    pid = Node.spawn_link slave_node, fn -> EliServer.sector(n, Map.new()) end
+    pid = Node.spawn_link slave_node, fn -> sector(n, Map.new()) end
     run_sectors(n + 1, Tuple.append(sectors, pid), slave_node)
+  end
+
+  def run_sectors(n, sectors, _) when n == 15*15 do
+    sectors
   end
 
   def run_sectors(n, sectors, slave_node) do
     #pid = spawn_link(EliServer, :sector, [n])
-    pid = spawn_link fn -> EliServer.sector(n, Map.new()) end
-    run_sectors(n + 1, Tuple.append(sectors, pid), slave_node)
+    pid = spawn_link fn -> sector(n, Map.new()) end
+    run_sectors_slave(n + 1, Tuple.append(sectors, pid), slave_node)
+  end
+
+  defp loop_sender(conn) do
+    receive do
+      {:send, packet} ->
+        :gen_tcp.send(conn, packet)
+        loop_sender(conn)
+    end
   end
 
   defp loop_acceptor(slave_node, socket, nextID, sectors) do
@@ -273,19 +283,23 @@ defmodule EliServer do
     #pid = Task.start(fn -> handle_client(client) end)
     #pid = spawn(EliServer, :handle_client, [client])
 
+    sender = spawn fn -> loop_sender(client) end
+
     x = :rand.uniform(300 - 1)
     y = case Integer.mod(nextID, 2) do
-          0 -> :rand.uniform(300 - 1)
-          _ -> :rand.uniform(600 - 1) + 300
+          0 -> :rand.uniform(150 - 1)
+          _ -> :rand.uniform(150 - 1) + 150
         end
     #x = :rand.uniform(40 - 1)
     #y = :rand.uniform(40 - 1)
 
     pid = case Integer.mod(nextID, 2) do
-            1 -> Node.spawn slave_node, fn -> EliServer.handle_client(client, x, y, nextID, sectors) end 
-            _ -> spawn fn -> EliServer.handle_client(client, x, y, nextID, sectors) end
+            0 -> Node.spawn slave_node, fn -> handle_client(sender, x, y, nextID, sectors) end 
+            _ -> spawn fn -> handle_client(sender, x, y, nextID, sectors) end
           end
-    :ok = :gen_tcp.controlling_process(client, pid)
+    
+    spawn fn -> recv_packet(client, pid) end
+    # :ok = :gen_tcp.controlling_process(client, pid)
 
     loop_acceptor(slave_node, socket, nextID + 1, sectors)
   end
@@ -294,7 +308,7 @@ defmodule EliServer do
     sectors = EliServer.run_sectors(0, {}, slave_node)
     IO.puts("Launching server.....")
 
-    {:ok, socket} = :gen_tcp.listen(port,  [:binary, packet: :raw, active: false, reuseaddr: true, buffer: 100])
+    {:ok, socket} = :gen_tcp.listen(port,  [:binary, {:packet, 0}, {:active, false}])
     IO.puts("Accepting connections on port #{port}")
 
     loop_acceptor(slave_node, socket, 0, sectors)
