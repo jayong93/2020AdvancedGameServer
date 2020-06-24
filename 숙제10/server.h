@@ -24,7 +24,7 @@ void send_packet_to_server(tcp::socket &sock, unsigned packet_size,
     if (packet_size <= 0)
         return;
 
-    char *packet = new char[packet_size];
+    unsigned char *packet = new unsigned char[packet_size];
 
     packet_maker_func(packet);
 
@@ -44,7 +44,7 @@ void send_packet_to_server(tcp::socket &sock, F &&packet_maker_func) {
 
     send_packet_to_server(
         sock, total_size,
-        [f{move(packet_maker_func)}, total_size](char *packet) {
+        [f{move(packet_maker_func)}, total_size](unsigned char *packet) {
             packet_header *header = (packet_header *)packet;
             header->size = total_size;
             header->type = P::type_num;
@@ -66,16 +66,20 @@ struct SOCKETINFO {
     string name;
 
     bool is_proxy;
+    bool is_logged_in{false};
     short x, y;
-    int move_time;
-    bool is_in_edge{false};
+    int move_time{0};
+    bool is_in_edge;
     atomic<ClientStatus> status{Normal};
 
-    MPSCQueue<unique_ptr<char[]>> pending_packets;
-    MPSCQueue<unique_ptr<char[]>> pending_while_hand_over_packets;
+    MPSCQueue<unique_ptr<unsigned char[]>> pending_packets;
+    MPSCQueue<unique_ptr<unsigned char[]>> pending_while_hand_over_packets;
     atomic_bool is_handling{false};
 
-    SOCKETINFO(unsigned id, tcp::socket &sock) : id{id}, sock{sock} {}
+    SOCKETINFO(unsigned id, tcp::socket &sock, bool is_proxy, short x, short y,
+               bool is_in_edge)
+        : id{id}, sock{sock}, is_proxy{is_proxy}, x{x}, y{y}, is_in_edge{
+                                                                  is_in_edge} {}
     void insert_to_view(unsigned id) {
         unique_lock<mutex> lg{view_list_lock, try_to_lock};
         if (lg) {
@@ -101,11 +105,12 @@ struct SOCKETINFO {
     }
 
     void end_hand_over(tcp::socket &send_sock) {
-        auto maker = [this, &send_sock](unique_ptr<char[]> packet) {
+        auto maker = [this, &send_sock](unique_ptr<unsigned char[]> packet) {
             unsigned total_size = sizeof(ss_packet_forwarding) +
                                   sizeof(packet_header) + packet[0];
             send_packet_to_server(
-                send_sock, total_size, [this, total_size, &packet](char *p) {
+                send_sock, total_size,
+                [this, total_size, &packet](unsigned char *p) {
                     packet_header *header = (packet_header *)p;
                     header->size = total_size;
                     header->type = ss_packet_forwarding::type_num;
@@ -171,7 +176,7 @@ struct ClientSlot {
 
 struct WorkerJob {
     unsigned user_id;
-    unique_ptr<char[]> packet;
+    unique_ptr<unsigned char[]> packet;
 };
 
 class Server {
@@ -180,9 +185,9 @@ class Server {
     void handle_recv(const boost_error &error, const size_t length);
     void handle_recv_from_server(const boost_error &error, const size_t length);
     bool process_packet_from_front_end(unsigned id,
-                                       unique_ptr<char[]> &&packet);
+                                       unique_ptr<unsigned char[]> &&packet);
     bool process_packet(int id, void *buff);
-    void process_packet_from_server(char *buff, size_t length);
+    void process_packet_from_server(unsigned char *buff, size_t length);
     void do_worker(unsigned worker_id);
     void acquire_new_id(unsigned new_id);
     void ProcessLogin(int user_id, char *id_str);
@@ -203,10 +208,10 @@ class Server {
 
     array<SPSCQueue<unsigned>, NUM_WORKER> worker_queue;
 
-    char recv_buf[MAX_BUFFER];
+    unsigned char recv_buf[MAX_BUFFER];
     size_t prev_packet_len;
 
-    char other_recv_buf[MAX_BUFFER];
+    unsigned char other_recv_buf[MAX_BUFFER];
     size_t other_prev_len{0};
 
   public:

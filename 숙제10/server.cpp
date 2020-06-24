@@ -66,9 +66,9 @@ void handle_send(const boost_error &error, const size_t length) {
 }
 
 template <typename F>
-void assemble_packet(char *recv_buf, size_t &prev_packet_size,
+void assemble_packet(unsigned char *recv_buf, size_t &prev_packet_size,
                      size_t received_bytes, F &&packet_handler) {
-    char *p = recv_buf;
+    unsigned char *p = (unsigned char *)recv_buf;
     auto remain = received_bytes;
     unsigned packet_size;
     if (0 == prev_packet_size)
@@ -78,7 +78,7 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
 
     while (remain > 0) {
         if (0 == packet_size)
-            packet_size = p[0];
+            packet_size = (unsigned char)(p[0]);
         unsigned required = packet_size - prev_packet_size;
         if (required <= remain) {
             unsigned *id = (unsigned *)(p + sizeof(packet_header));
@@ -88,7 +88,7 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
             prev_packet_size = 0;
             packet_size = 0;
         } else {
-            memmove(recv_buf, p, remain);
+            memmove(recv_buf + prev_packet_size, p + prev_packet_size, remain);
             prev_packet_size += remain;
             break;
         }
@@ -96,9 +96,9 @@ void assemble_packet(char *recv_buf, size_t &prev_packet_size,
 }
 
 template <typename P, typename F>
-unique_ptr<char[]> make_message(unsigned id, F &&func) {
+unique_ptr<unsigned char[]> make_message(unsigned id, F &&func) {
     unsigned total_size = sizeof(packet_header) + sizeof(unsigned) + sizeof(P);
-    unique_ptr<char[]> packet{new char[total_size]};
+    unique_ptr<unsigned char[]> packet{new unsigned char[total_size]};
 
     packet_header *header = (packet_header *)packet.get();
     header->size = total_size;
@@ -112,51 +112,40 @@ unique_ptr<char[]> make_message(unsigned id, F &&func) {
 }
 
 template <typename P, typename F>
-pair<char *, size_t> make_packet(SOCKETINFO **users, unsigned user_num,
-                                 F &&func) {
+pair<unsigned char *, size_t> make_packet(SOCKETINFO &user, F &&func) {
 
     if (user_num <= 0)
         return make_pair(nullptr, 0);
 
     unsigned packet_offset =
-        sizeof(packet_header) + sizeof(unsigned) * (1 + user_num);
+        sizeof(packet_header) + sizeof(unsigned);
     unsigned total_size = packet_offset + sizeof(P);
 
-    char *packet = new char[total_size];
+    unsigned char *packet = new unsigned char[total_size];
     packet_header *header = (packet_header *)packet;
     header->size = total_size;
     header->type = P::type_num;
 
-    unsigned *user_data = (unsigned *)(packet + sizeof(packet_header));
-    *user_data = user_num;
-    for (auto i = 0; i < user_num; ++i) {
-        *(user_data + i + 1) = users[i]->id;
-    }
+    unsigned *user_id = (unsigned *)(packet + sizeof(packet_header));
+    *user_id = user.id;
 
     func(*(P *)(packet + packet_offset));
     return make_pair(packet, total_size);
 }
 
-// user_num은 32bit unsigned int, user는 id => unsigned int
 template <typename P, typename F>
-void send_packet_all(SOCKETINFO **users, unsigned user_num,
-                     F &&packet_maker_func) {
+void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
     auto [packet, total_size] =
-        make_packet<P>(users, user_num, move(packet_maker_func));
+        make_packet<P>(client, move(packet_maker_func));
+
     if (packet == nullptr)
         return;
 
-    (*users)->sock.async_send(buffer(packet, total_size),
+    client.sock.async_send(buffer(packet, total_size),
                               [packet](auto error, auto length) {
                                   delete[] packet;
                                   handle_send(error, length);
                               });
-}
-
-template <typename P, typename F>
-void send_packet(SOCKETINFO &client, F &&packet_maker_func) {
-    SOCKETINFO *c_ptr = &client;
-    send_packet_all<P>(&c_ptr, 1, move(packet_maker_func));
 }
 
 template <typename P, typename F>
@@ -247,64 +236,38 @@ bool Server::ProcessMove(SOCKETINFO &client, short new_x, short new_y,
 
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client, &new_view_list](auto &cl) {
-            if (client.id != cl.id && is_near(cl.x, cl.y, client.x, client.y)) {
+            if (client.id != cl.id && is_near(cl.x, cl.y, client.x, client.y) &&
+                cl.is_logged_in) {
                 new_view_list.emplace(cl.id);
             }
         });
     }
 
-    vector<SOCKETINFO *> to_put, to_remove, to_pos;
-
     for (auto new_id : new_view_list) {
-        clients[new_id].then([&client, &old_view_list, &to_put](auto &other) {
+        clients[new_id].then([&client, &old_view_list](auto &other) {
             auto it = old_view_list.find(other.id);
             if (it == old_view_list.end()) {
                 other.insert_to_view(client.id);
                 client.insert_to_view(other.id);
                 send_put_object_packet(client, other);
-                if (other.is_proxy == false)
-                    to_put.emplace_back(&other);
+                send_put_object_packet(other, client);
             }
         });
     }
-    send_packet_all<sc_packet_put_object>(
-        to_put.data(), to_put.size(), [&client](sc_packet_put_object &packet) {
-            packet.id = client.id;
-            packet.x = client.x;
-            packet.y = client.y;
-            if (client.is_proxy) {
-                packet.o_type = 2;
-            } else {
-                packet.o_type = 1;
-            }
-        });
 
     for (auto old_id : old_view_list) {
-        clients[old_id].then(
-            [&client, &new_view_list, &to_remove, &to_pos](auto &other) {
-                auto it = new_view_list.find(other.id);
-                if (it == new_view_list.end()) {
-                    other.erase_from_view(client.id);
-                    client.erase_from_view(other.id);
-                    send_remove_object_packet(client, other);
-                    if (other.is_proxy == false)
-                        to_remove.emplace_back(&other);
-                } else {
-                    if (other.is_proxy == false)
-                        to_pos.emplace_back(&other);
-                }
-            });
+        clients[old_id].then([&client, &new_view_list](auto &other) {
+            auto it = new_view_list.find(other.id);
+            if (it == new_view_list.end()) {
+                other.erase_from_view(client.id);
+                client.erase_from_view(other.id);
+                send_remove_object_packet(client, other);
+                send_remove_object_packet(other, client);
+            } else {
+                send_pos_packet(other, client);
+            }
+        });
     }
-    send_packet_all<sc_packet_remove_object>(
-        to_remove.data(), to_remove.size(),
-        [&client](sc_packet_remove_object &packet) { packet.id = client.id; });
-    send_packet_all<sc_packet_pos>(to_pos.data(), to_pos.size(),
-                                   [&client](sc_packet_pos &packet) {
-                                       packet.id = client.id;
-                                       packet.move_time = client.move_time;
-                                       packet.x = client.x;
-                                       packet.y = client.y;
-                                   });
 
     if (client.is_proxy)
         return false;
@@ -400,12 +363,13 @@ void Server::ProcessLogin(int user_id, char *id_str) {
     auto &client = client_slot.ptr;
 
     client->name = id_str;
-    client_slot.is_active.store(true, memory_order_release);
     send_login_ok_packet(*client, user_id);
 
+    client_slot.ptr->is_logged_in = true;
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
         clients[i].then([&client](auto &other) {
-            if (is_near(other.x, other.y, client->x, client->y) == false) {
+            if (is_near(other.x, other.y, client->x, client->y) == false ||
+                other.is_logged_in != true) {
                 return;
             }
             if (other.is_proxy == false) {
@@ -428,22 +392,19 @@ void Server::ProcessLogin(int user_id, char *id_str) {
 
 SOCKETINFO *create_new_player(tcp::socket &sock, unsigned id, short x, short y,
                               bool is_proxy, unsigned server_id) {
-    SOCKETINFO *new_player = new SOCKETINFO{id, sock};
-    new_player->x = x;
-    new_player->y = y;
-    new_player->is_proxy = is_proxy;
-
     bool is_in_edge = false;
     if (server_id == 0) {
-        if (y > WORLD_HEIGHT / 2 - (VIEW_RANGE + 1)) {
+        if (y >= WORLD_HEIGHT / 2 - EDGE_RANGE) {
             is_in_edge = true;
         }
     } else {
-        if (y < WORLD_HEIGHT / 2 - VIEW_RANGE) {
+        if (y < WORLD_HEIGHT / 2 + EDGE_RANGE) {
             is_in_edge = true;
         }
     }
-    new_player->is_in_edge = is_in_edge;
+
+    SOCKETINFO *new_player =
+        new SOCKETINFO{id, sock, is_proxy, x, y, is_in_edge};
 
     return new_player;
 }
@@ -463,17 +424,17 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
     } else {
         assemble_packet(
             this->recv_buf, this->prev_packet_len, length,
-            [this](unsigned id, char *packet, auto len) {
+            [this](unsigned id, unsigned char *packet, auto len) {
                 if (packet[1] == fs_packet_forwarding::type_num) {
-                    char *real_packet = packet + sizeof(packet_header) +
-                                        sizeof(unsigned) +
-                                        sizeof(fs_packet_forwarding);
+                    unsigned char *real_packet =
+                        packet + sizeof(packet_header) + sizeof(unsigned) +
+                        sizeof(fs_packet_forwarding);
                     if (real_packet[1] == cs_packet_login::type_num) {
                         handle_accept(id);
                     }
                 }
 
-                unique_ptr<char[]> buf{new char[len]};
+                unique_ptr<unsigned char[]> buf{new unsigned char[len]};
                 memcpy(buf.get(), packet, len);
                 clients[id].then([&buf](SOCKETINFO &cl) {
                     switch (cl.status.load(memory_order_acquire)) {
@@ -489,7 +450,8 @@ void Server::handle_recv(const boost_error &error, const size_t length) {
             });
 
         front_end_sock.async_read_some(
-            buffer(this->recv_buf, MAX_BUFFER),
+            buffer(this->recv_buf + prev_packet_len,
+                   MAX_BUFFER - prev_packet_len),
             [this](auto error, auto length) { handle_recv(error, length); });
     }
 }
@@ -545,7 +507,7 @@ void Server::do_worker(unsigned worker_id) {
         clients[user_id].then([this, user_id](SOCKETINFO &cl) {
             if (cl.status.load(memory_order_acquire) == Normal) {
                 cl.pending_while_hand_over_packets.for_each(
-                    [this, user_id](unique_ptr<char[]> packet) {
+                    [this, user_id](unique_ptr<unsigned char[]> packet) {
                         this->process_packet_from_front_end(user_id,
                                                             move(packet));
                     });
@@ -569,7 +531,8 @@ void Server::do_worker(unsigned worker_id) {
     }
 }
 
-void Server::run(const string &other_server_ip, unsigned short other_server_port) {
+void Server::run(const string &other_server_ip,
+                 unsigned short other_server_port) {
     vector<thread> worker_threads;
     acceptor.async_accept(front_end_sock, [this](boost_error error) {
         if (error) {
@@ -647,20 +610,17 @@ void Server::disconnect(unsigned id) {
     auto &client_slot = clients[id];
     if (!client_slot)
         return;
+    client_slot.ptr->is_logged_in = false;
     client_slot.is_active.store(false);
     auto &client = client_slot.ptr;
 
-    vector<SOCKETINFO *> near_clients;
     for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
-        clients[i].then([&client, &near_clients](auto &other) {
-            if (is_near(other.x, other.y, client->x, client->y))
-                near_clients.emplace_back(&other);
+        clients[i].then([&client](auto &other) {
+            if (is_near(other.x, other.y, client->x, client->y) &&
+                other.is_logged_in)
+                send_remove_object_packet(other, *client);
         });
     }
-
-    send_packet_all<sc_packet_remove_object>(
-        near_clients.data(), near_clients.size(),
-        [&client](sc_packet_remove_object &packet) { packet.id = client->id; });
 
     if (client->is_in_edge)
         send_packet_to_server<ss_packet_leave>(
@@ -674,26 +634,26 @@ void Server::handle_recv_from_server(const boost_error &error,
         cerr << "Error at recv from other server: " << error.message() << endl;
     } else if (length > 0) {
         assemble_packet(other_recv_buf, other_prev_len, length,
-                        [this](auto _, char *packet, unsigned len) {
+                        [this](auto _, unsigned char *packet, unsigned len) {
                             process_packet_from_server(packet, len);
                         });
 
-        other_server_recv.async_read_some(buffer(other_recv_buf, MAX_BUFFER),
-                                          [this](auto error, auto length) {
-                                              handle_recv_from_server(error,
-                                                                      length);
-                                          });
+        other_server_recv.async_read_some(
+            buffer(other_recv_buf + other_prev_len,
+                   MAX_BUFFER - other_prev_len),
+            [this](auto error, auto length) {
+                handle_recv_from_server(error, length);
+            });
     }
 }
 
-bool Server::process_packet_from_front_end(unsigned id,
-                                           unique_ptr<char[]> &&packet) {
+bool Server::process_packet_from_front_end(
+    unsigned id, unique_ptr<unsigned char[]> &&packet) {
     switch (packet[1]) {
     case fs_packet_logout::type_num: {
         clients[id].then([this, &packet](SOCKETINFO &cl) {
-            if (cl.status.load(memory_order_acquire) == HandOvering) {
+            if (cl.status.load(memory_order_acquire) != Normal) {
                 cl.pending_while_hand_over_packets.emplace(move(packet));
-                cl.end_hand_over(this->other_server_send);
             } else {
                 disconnect(cl.id);
             }
@@ -747,7 +707,9 @@ bool Server::process_packet_from_front_end(unsigned id,
                     if (i == id)
                         continue;
                     clients[i].then([&cl](SOCKETINFO &other) {
-                        send_put_object_packet(cl, other);
+                        if (is_near(cl.x, cl.y, other.x, other.y)) {
+                            send_put_object_packet(cl, other);
+                        }
                     });
                 }
                 cl.status.store(Normal);
@@ -758,11 +720,13 @@ bool Server::process_packet_from_front_end(unsigned id,
     } break;
     case message_proxy_in::type_num: {
         clients[id].then([this, id](SOCKETINFO &new_client) {
+            new_client.is_logged_in = true;
             new_client.is_in_edge = true;
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&new_client](auto &cl) {
-                    if (is_near(cl.x, cl.y, new_client.x, new_client.y)) {
+                    if (is_near(cl.x, cl.y, new_client.x, new_client.y) &&
+                        cl.is_logged_in) {
                         send_put_object_packet(cl, new_client);
                     }
                 });
@@ -780,24 +744,29 @@ bool Server::process_packet_from_front_end(unsigned id,
     case message_proxy_leave::type_num: {
         auto &client_slot = clients[id];
         client_slot.then([this, &client_slot](SOCKETINFO &old_client) {
-            client_slot.is_active.store(false);
+            old_client.is_logged_in = false;
             old_client.is_in_edge = false;
+            client_slot.is_active.store(false);
             for (auto i = 0; i < user_num.load(memory_order_relaxed); ++i) {
                 auto &slot = clients[i];
                 slot.then([&old_client](auto &cl) {
-                    if (is_near(cl.x, cl.y, old_client.x, old_client.y))
+                    if (is_near(cl.x, cl.y, old_client.x, old_client.y) &&
+                        cl.is_logged_in)
                         send_remove_object_packet(cl, old_client);
                 });
             }
         });
     } break;
+    default:
+        cerr << "Unknown type has been received" << endl;
     }
     return false;
 }
 
 bool Server::process_packet(int id, void *buff) {
     packet_header *header = (packet_header *)buff;
-    char *packet = reinterpret_cast<char *>(buff) + sizeof(packet_header);
+    unsigned char *packet =
+        reinterpret_cast<unsigned char *>(buff) + sizeof(packet_header);
     switch (header->type) {
     case cs_packet_login::type_num: {
         cs_packet_login *login_packet =
@@ -822,16 +791,15 @@ bool Server::process_packet(int id, void *buff) {
         ProcessMove(id, 99, 0);
         break;
     default:
-        cout << "Invalid Packet Type Error\n";
-        while (true)
-            ;
+        cerr << "Unknown type has been received" << endl;
     }
     return false;
 }
 
-void Server::process_packet_from_server(char *buff, size_t length) {
+void Server::process_packet_from_server(unsigned char *buff, size_t length) {
     packet_header *header = (packet_header *)buff;
-    char *packet = reinterpret_cast<char *>(buff + sizeof(packet_header));
+    unsigned char *packet =
+        reinterpret_cast<unsigned char *>(buff + sizeof(packet_header));
     switch (header->type) {
     case ss_packet_put::type_num: {
         ss_packet_put *put_packet = reinterpret_cast<ss_packet_put *>(packet);
@@ -891,9 +859,10 @@ void Server::process_packet_from_server(char *buff, size_t length) {
     case ss_packet_forwarding::type_num: {
         ss_packet_forwarding *f_packet = (ss_packet_forwarding *)packet;
         clients[f_packet->id].then([buff](SOCKETINFO &cl) {
-            char *real_packet =
+            unsigned char *real_packet =
                 (buff + sizeof(packet_header) + sizeof(ss_packet_forwarding));
-            unique_ptr<char[]> new_packet(new char[real_packet[0]]);
+            unique_ptr<unsigned char[]> new_packet(
+                new unsigned char[real_packet[0]]);
             memcpy(new_packet.get(), real_packet, real_packet[0]);
             cl.pending_packets.emplace(move(new_packet));
         });
@@ -909,5 +878,7 @@ void Server::process_packet_from_server(char *buff, size_t length) {
             cl.pending_packets.emplace(move(msg));
         });
     } break;
+    default:
+        cerr << "Unknown type has been received" << endl;
     }
 }
