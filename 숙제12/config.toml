@@ -1,5 +1,0 @@
-id = 0
-accept_port = 9001
-other_server_accept_port = 9010
-other_server_port = 9011
-other_server_ip = "127.0.0.1"
